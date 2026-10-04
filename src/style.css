@@ -7,8 +7,10 @@
   --text-muted: #7d7265;
   --accent-ink: #1e3a8a;
   --accent-pen: #1e293b;
-  --accent-button: #2563eb;
-  --button-hover: #1d4ed8;
+  --accent-blue: #2563eb;
+  --accent-blue-light: #eff6ff;
+  --accent-danger: #dc2626;
+  --accent-danger-light: #fef2f2;
   --grid-line: rgba(70, 50, 20, 0.06);
   --font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -43,17 +45,19 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 24px;
+  padding: 10px 20px;
   background-color: #ffffff;
   border-bottom: 1px solid var(--paper-border);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
   z-index: 10;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .brand-section {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
 }
 
 .brand-title {
@@ -79,10 +83,10 @@ html, body {
   color: var(--text-muted);
 }
 
-.header-controls {
+.header-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .stats-bar {
@@ -103,27 +107,125 @@ html, body {
   color: var(--text-primary);
 }
 
-.btn-secondary {
-  appearance: none;
-  border: 1px solid #cbd5e1;
-  background-color: #ffffff;
-  color: #334155;
-  font-family: var(--font-family);
-  font-size: 13px;
-  font-weight: 500;
-  padding: 7px 14px;
-  border-radius: 6px;
+/* Toolbar UI Component */
+.calcink-toolbar {
+  display: flex;
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 4px 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  gap: 6px;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 24px;
+  background-color: #e2e8f0;
+  margin: 0 4px;
+}
+
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: #475569;
   cursor: pointer;
   transition: all 0.15s ease-in-out;
+  user-select: none;
 }
 
-.btn-secondary:hover {
+.tool-btn:hover:not(:disabled) {
   background-color: #f1f5f9;
-  border-color: #94a3b8;
+  color: #1e293b;
 }
 
-.btn-secondary:active {
-  transform: scale(0.98);
+.tool-btn.active {
+  background-color: var(--accent-blue-light);
+  border-color: #bfdbfe;
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+.tool-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.tool-btn.danger:hover:not(:disabled) {
+  background-color: var(--accent-danger-light);
+  color: var(--accent-danger);
+}
+
+.tool-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.tool-label {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Stroke Settings in Toolbar */
+.stroke-settings {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+}
+
+.slider-label {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.width-val {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  min-width: 14px;
+}
+
+.width-slider {
+  appearance: none;
+  width: 70px;
+  height: 6px;
+  border-radius: 3px;
+  background: #e2e8f0;
+  outline: none;
+  cursor: pointer;
+}
+
+.width-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
 }
 
 /* Canvas Area Container */
@@ -132,7 +234,7 @@ html, body {
   flex: 1;
   width: 100%;
   height: 100%;
-  padding: 16px;
+  padding: 14px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -161,10 +263,9 @@ html, body {
   height: 100%;
   display: block;
   touch-action: none;
-  cursor: crosshair;
 }
 
-/* Footer / Instructions */
+/* Footer / Shortcuts Help */
 .canvas-footer {
   display: flex;
   justify-content: space-between;
@@ -172,4 +273,19 @@ html, body {
   padding-top: 8px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.keyboard-hints {
+  display: flex;
+  gap: 12px;
+}
+
+.kbd-hint kbd {
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: #334155;
 }
