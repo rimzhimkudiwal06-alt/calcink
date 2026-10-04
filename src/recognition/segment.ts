@@ -157,9 +157,17 @@ export function shouldMergeStrokes(
       bar.cy >= stem.yMin - tol && bar.cy <= stem.yMax + tol) return true;
   }
 
-  // 5. multi-stroke digits (e.g. '5' = body + top bar): drawn quickly, stacked, touching
+  // 5. multi-stroke digits (e.g. '2' = loop + tail, '5' = body + bar): drawn quickly,
+  //    strongly overlapping in x, and touching or overlapping in y
   if (timeGap <= config.maxTimeGapMs && iou >= config.touchOverlapThreshold &&
     vGap <= typical * config.touchGapRatio) return true;
+  // 5b. same idea, but one stroke's bbox mostly sits inside the other's (loop + tail)
+  if (timeGap <= config.maxTimeGapMs && doBBoxesIntersect(b1, b2)) {
+    const ox = Math.max(0, Math.min(b1.xMax, b2.xMax) - Math.max(b1.xMin, b2.xMin));
+    const oy = Math.max(0, Math.min(b1.yMax, b2.yMax) - Math.max(b1.yMin, b2.yMin));
+    const smaller = Math.min(b1.w * b1.h, b2.w * b2.h);
+    if (smaller > 0 && (ox * oy) / smaller >= 0.5) return true;
+  }
 
   return false;
 }

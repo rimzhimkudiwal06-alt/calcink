@@ -15,6 +15,15 @@ const tap = (id: string, x: number, y: number, t0: number): Stroke => ({
 const ids = (g: { strokes: Stroke[] }) => g.strokes.map((s) => s.id).sort();
 
 describe('segmentStrokes', () => {
+    it('merges a two-stroke "2" (loop + tail) but keeps "12" as two symbols', () => {
+        const g = segmentStrokes([
+            line('one', 0, 0, 0, 40, 0),
+            line('loop', 20, 0, 40, 18, 300),
+            line('tail', 22, 14, 42, 40, 450),
+        ]);
+        expect(g).toHaveLength(2);
+    });
+
     it('groups a lone "÷" (bar + two dots, nothing else) into one symbol', () => {
         const g = segmentStrokes([line('bar', 0, 20, 60, 20, 0), tap('d1', 30, 5, 100), tap('d2', 30, 35, 200)]);
         expect(g).toHaveLength(1);

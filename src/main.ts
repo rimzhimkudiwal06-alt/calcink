@@ -11,6 +11,7 @@ registerSW({ immediate: true });
 import './style.css';
 import { DrawingCanvas } from './canvas/DrawingCanvas';
 import type { Stroke } from './types';
+import { attachRecognition } from './recognition/attach';
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
@@ -58,6 +59,8 @@ const drawingCanvas = new DrawingCanvas(canvasElement, {
   strokeWidth: 3,
   strokeColor: '#1e293b',
 });
+
+attachRecognition(drawingCanvas, canvasElement);
 
 // UI stat elements
 const strokeCountEl = document.querySelector<HTMLSpanElement>('#stroke-count');
