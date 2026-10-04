@@ -2,15 +2,22 @@
  * CalcInk Drawing Canvas Engine
  *
  * Implements a high-performance (60+ FPS), high-DPI aware,
- * touch & stylus friendly digital ink canvas with Bezier curve smoothing.
+ * touch & stylus friendly digital ink canvas with Bezier curve smoothing,
+ * full undo/redo stacks, whole stroke eraser, and pixel eraser.
  */
 
 import type { Point, Stroke } from '../types';
 import { clientToCanvas, getCanvasDeviceSize } from './coords';
+import { HistoryManager } from './HistoryManager';
+import { isPointNearStroke, eraseFromStroke } from './geometry';
+
+export type ToolType = 'pen' | 'stroke-eraser' | 'pixel-eraser';
 
 export interface DrawingCanvasOptions {
   strokeWidth?: number;
   strokeColor?: string;
+  tool?: ToolType;
+  maxHistory?: number;
 }
 
 /**
@@ -73,7 +80,8 @@ export function renderStroke(
 
 /**
  * DrawingCanvas manages user pointer input, stroke state,
- * incremental real-time rendering, and high-DPI canvas resizing.
+ * incremental real-time rendering, high-DPI canvas resizing,
+ * and editing tools (Pen, Stroke Eraser, Pixel Eraser, Undo/Redo).
  */
 export class DrawingCanvas {
   private canvas: HTMLCanvasElement;
@@ -86,15 +94,24 @@ export class DrawingCanvas {
   private activeStroke: Stroke | null = null;
   private activePointerId: number | null = null;
 
-  // Drawing settings
+  // Drawing and tool settings
+  private tool: ToolType = 'pen';
   private strokeWidth: number;
   private strokeColor: string;
+  private strokeEraserRadius: number = 10;
+  private pixelEraserRadius: number = 12;
+
+  // Undo/Redo history manager
+  private history: HistoryManager;
+  private preActionSnapshot: Stroke[] | null = null;
+  private wasErasedInGesture: boolean = false;
 
   // Device pixel ratio cache
   private dpr: number = 1;
 
-  // Listeners for stroke mutations
+  // Listeners
   private strokeChangeListeners: Set<(strokes: Stroke[]) => void> = new Set();
+  private historyChangeListeners: Set<(canUndo: boolean, canRedo: boolean) => void> = new Set();
 
   // Bound event handlers for clean removal
   private boundPointerDown: (e: PointerEvent) => void;
@@ -115,11 +132,14 @@ export class DrawingCanvas {
     }
     this.ctx = context;
 
+    this.tool = options.tool ?? 'pen';
     this.strokeWidth = options.strokeWidth ?? 3;
     this.strokeColor = options.strokeColor ?? '#1e293b';
+    this.history = new HistoryManager(options.maxHistory ?? 50);
 
     // Prevent default touch gestures (scrolling, zooming) over canvas
     this.canvas.style.touchAction = 'none';
+    this.updateCursor();
 
     // Bind event handlers
     this.boundPointerDown = this.handlePointerDown.bind(this);
@@ -216,31 +236,80 @@ export class DrawingCanvas {
   }
 
   /**
-   * Clears all strokes from the canvas.
+   * Clears all strokes from the canvas. This operation is fully undoable!
    *
    * @param notify - Whether to fire onStrokesChanged callback (default: true)
    */
   public clear(notify: boolean = true): void {
+    if (this.strokes.length === 0) return;
+
+    // Push state to undo stack before clearing
+    this.history.push(this.strokes);
+
     this.strokes = [];
     this.activeStroke = null;
     this.activePointerId = null;
     this.redraw();
+
+    this.notifyHistoryChanged();
     if (notify) {
       this.notifyStrokesChanged();
     }
   }
 
   /**
-   * Subscribes to stroke changes.
+   * Undoes the last drawing or erasing operation.
    *
-   * @param callback - Function invoked whenever strokes are added, updated, or cleared
-   * @returns Unsubscribe function to clean up listener
+   * @returns True if an undo action was performed
    */
-  public onStrokesChanged(callback: (strokes: Stroke[]) => void): () => void {
-    this.strokeChangeListeners.add(callback);
-    return () => {
-      this.strokeChangeListeners.delete(callback);
-    };
+  public undo(): boolean {
+    const previous = this.history.undo(this.strokes);
+    if (!previous) return false;
+
+    this.strokes = previous;
+    this.redraw();
+    this.notifyHistoryChanged();
+    this.notifyStrokesChanged();
+    return true;
+  }
+
+  /**
+   * Redoes the last undone operation.
+   *
+   * @returns True if a redo action was performed
+   */
+  public redo(): boolean {
+    const next = this.history.redo(this.strokes);
+    if (!next) return false;
+
+    this.strokes = next;
+    this.redraw();
+    this.notifyHistoryChanged();
+    this.notifyStrokesChanged();
+    return true;
+  }
+
+  public canUndo(): boolean {
+    return this.history.canUndo();
+  }
+
+  public canRedo(): boolean {
+    return this.history.canRedo();
+  }
+
+  /**
+   * Sets the active tool ('pen' | 'stroke-eraser' | 'pixel-eraser').
+   */
+  public setTool(tool: ToolType): void {
+    this.tool = tool;
+    this.updateCursor();
+  }
+
+  /**
+   * Gets the currently active tool.
+   */
+  public getTool(): ToolType {
+    return this.tool;
   }
 
   /**
@@ -248,6 +317,9 @@ export class DrawingCanvas {
    */
   public setStrokeWidth(width: number): void {
     this.strokeWidth = Math.max(1, width);
+    // Also scale eraser radii proportionally for comfortable ergonomics
+    this.strokeEraserRadius = Math.max(8, this.strokeWidth * 2.5);
+    this.pixelEraserRadius = Math.max(8, this.strokeWidth * 3);
   }
 
   /**
@@ -272,6 +344,36 @@ export class DrawingCanvas {
   }
 
   /**
+   * Subscribes to stroke changes.
+   *
+   * @param callback - Function invoked whenever strokes are added, updated, or cleared
+   * @returns Unsubscribe function to clean up listener
+   */
+  public onStrokesChanged(callback: (strokes: Stroke[]) => void): () => void {
+    this.strokeChangeListeners.add(callback);
+    return () => {
+      this.strokeChangeListeners.delete(callback);
+    };
+  }
+
+  /**
+   * Subscribes to undo/redo availability updates.
+   *
+   * @param callback - Function receiving (canUndo, canRedo) booleans
+   * @returns Unsubscribe function
+   */
+  public onHistoryChanged(
+    callback: (canUndo: boolean, canRedo: boolean) => void
+  ): () => void {
+    this.historyChangeListeners.add(callback);
+    // Immediately report current state upon subscription
+    callback(this.canUndo(), this.canRedo());
+    return () => {
+      this.historyChangeListeners.delete(callback);
+    };
+  }
+
+  /**
    * Cleans up all event listeners and observers to prevent memory leaks.
    */
   public destroy(): void {
@@ -287,6 +389,23 @@ export class DrawingCanvas {
     }
 
     this.strokeChangeListeners.clear();
+    this.historyChangeListeners.clear();
+  }
+
+  // -------------------------------------------------------------
+  // Tool Cursors
+  // -------------------------------------------------------------
+
+  private updateCursor(): void {
+    switch (this.tool) {
+      case 'pen':
+        this.canvas.style.cursor = 'crosshair';
+        break;
+      case 'stroke-eraser':
+      case 'pixel-eraser':
+        this.canvas.style.cursor = 'cell';
+        break;
+    }
   }
 
   // -------------------------------------------------------------
@@ -294,48 +413,58 @@ export class DrawingCanvas {
   // -------------------------------------------------------------
 
   private handlePointerDown(e: PointerEvent): void {
-    // Only accept primary button (left mouse click, pen contact, or first finger touch)
+    // Only accept primary button (left click / touch / stylus tip)
     if (e.button !== 0 && e.buttons !== 1) return;
 
-    // Single active pointer only: ignore multi-touch secondary fingers
+    // Single active pointer only
     if (this.activePointerId !== null) return;
 
     this.activePointerId = e.pointerId;
     try {
       this.canvas.setPointerCapture(e.pointerId);
     } catch {
-      // Ignore if setPointerCapture fails on certain browsers
+      // Ignore
     }
 
     const rect = this.canvas.getBoundingClientRect();
     const { x, y } = clientToCanvas(e.clientX, e.clientY, rect);
 
-    const point: Point = {
-      x,
-      y,
-      t: e.timeStamp || Date.now(),
-      pressure: e.pressure > 0 ? e.pressure : 0.5,
-    };
+    // Save state snapshot for potential undo
+    this.preActionSnapshot = [...this.strokes];
+    this.wasErasedInGesture = false;
 
-    const strokeId = `stroke_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    this.activeStroke = {
-      id: strokeId,
-      points: [point],
-      width: this.strokeWidth,
-      color: this.strokeColor,
-    };
+    if (this.tool === 'pen') {
+      const point: Point = {
+        x,
+        y,
+        t: e.timeStamp || Date.now(),
+        pressure: e.pressure > 0 ? e.pressure : 0.5,
+      };
 
-    // Immediately render a small initial dot for responsiveness
-    this.ctx.save();
-    this.ctx.fillStyle = this.strokeColor;
-    this.ctx.beginPath();
-    this.ctx.arc(x, y, Math.max(1, this.strokeWidth / 2), 0, Math.PI * 2);
-    this.ctx.fill();
-    this.ctx.restore();
+      const strokeId = `stroke_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      this.activeStroke = {
+        id: strokeId,
+        points: [point],
+        width: this.strokeWidth,
+        color: this.strokeColor,
+      };
+
+      // Immediately render starting dot
+      this.ctx.save();
+      this.ctx.fillStyle = this.strokeColor;
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, Math.max(1, this.strokeWidth / 2), 0, Math.PI * 2);
+      this.ctx.fill();
+      this.ctx.restore();
+    } else if (this.tool === 'stroke-eraser') {
+      this.applyStrokeEraser(x, y);
+    } else if (this.tool === 'pixel-eraser') {
+      this.applyPixelEraser(x, y);
+    }
   }
 
   private handlePointerMove(e: PointerEvent): void {
-    if (e.pointerId !== this.activePointerId || !this.activeStroke) return;
+    if (e.pointerId !== this.activePointerId) return;
 
     const rect = this.canvas.getBoundingClientRect();
 
@@ -345,30 +474,69 @@ export class DrawingCanvas {
 
     for (const ev of events) {
       const { x, y } = clientToCanvas(ev.clientX, ev.clientY, rect);
-      const points = this.activeStroke.points;
-      const lastPoint = points[points.length - 1];
 
-      // Avoid duplicate points if movement is sub-pixel (< 0.5px)
-      if (lastPoint) {
-        const dx = x - lastPoint.x;
-        const dy = y - lastPoint.y;
-        if (dx * dx + dy * dy < 0.25) {
-          continue;
+      if (this.tool === 'pen') {
+        if (!this.activeStroke) continue;
+        const points = this.activeStroke.points;
+        const lastPoint = points[points.length - 1];
+
+        // Avoid duplicate sub-pixel points (< 0.5px)
+        if (lastPoint) {
+          const dx = x - lastPoint.x;
+          const dy = y - lastPoint.y;
+          if (dx * dx + dy * dy < 0.25) {
+            continue;
+          }
         }
+
+        const point: Point = {
+          x,
+          y,
+          t: ev.timeStamp || Date.now(),
+          pressure: ev.pressure > 0 ? ev.pressure : 0.5,
+        };
+
+        points.push(point);
+
+        // INCREMENTAL DRAWING: Draw only newest segment to guarantee 60+ FPS
+        this.drawNewestSegment(points);
+      } else if (this.tool === 'stroke-eraser') {
+        this.applyStrokeEraser(x, y);
+      } else if (this.tool === 'pixel-eraser') {
+        this.applyPixelEraser(x, y);
       }
+    }
+  }
 
-      const point: Point = {
-        x,
-        y,
-        t: ev.timeStamp || Date.now(),
-        pressure: ev.pressure > 0 ? ev.pressure : 0.5,
-      };
+  private applyStrokeEraser(x: number, y: number): void {
+    const originalCount = this.strokes.length;
+    // Remove any stroke that touches the eraser circle
+    this.strokes = this.strokes.filter(
+      (stroke) => !isPointNearStroke({ x, y }, stroke, this.strokeEraserRadius)
+    );
 
-      points.push(point);
+    if (this.strokes.length !== originalCount) {
+      this.wasErasedInGesture = true;
+      this.redraw();
+    }
+  }
 
-      // INCREMENTAL DRAWING: Draw ONLY the newest curve segment!
-      // This avoids redrawing every stroke on every pointermove, guaranteeing 60+ FPS.
-      this.drawNewestSegment(points);
+  private applyPixelEraser(x: number, y: number): void {
+    let changed = false;
+    const nextStrokes: Stroke[] = [];
+
+    for (const stroke of this.strokes) {
+      const split = eraseFromStroke(stroke, { x, y }, this.pixelEraserRadius);
+      if (split.length !== 1 || split[0] !== stroke) {
+        changed = true;
+      }
+      nextStrokes.push(...split);
+    }
+
+    if (changed) {
+      this.strokes = nextStrokes;
+      this.wasErasedInGesture = true;
+      this.redraw();
     }
   }
 
@@ -386,13 +554,11 @@ export class DrawingCanvas {
     this.ctx.lineJoin = 'round';
 
     if (len === 2) {
-      // First line segment
       this.ctx.beginPath();
       this.ctx.moveTo(pts[0].x, pts[0].y);
       this.ctx.lineTo(pts[1].x, pts[1].y);
       this.ctx.stroke();
     } else if (len === 3) {
-      // Transition from start to first midpoint
       const midX = (pts[1].x + pts[2].x) / 2;
       const midY = (pts[1].y + pts[2].y) / 2;
 
@@ -401,7 +567,6 @@ export class DrawingCanvas {
       this.ctx.quadraticCurveTo(pts[1].x, pts[1].y, midX, midY);
       this.ctx.stroke();
     } else {
-      // Subsequent segments: from previous midpoint to new midpoint
       const prevMidX = (pts[len - 3].x + pts[len - 2].x) / 2;
       const prevMidY = (pts[len - 3].y + pts[len - 2].y) / 2;
 
@@ -423,21 +588,37 @@ export class DrawingCanvas {
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
-      // Ignore if pointer capture release throws
+      // Ignore
     }
 
-    if (this.activeStroke && this.activeStroke.points.length > 0) {
+    let changed = false;
+
+    if (this.tool === 'pen' && this.activeStroke && this.activeStroke.points.length > 0) {
+      if (this.preActionSnapshot) {
+        this.history.push(this.preActionSnapshot);
+      }
       this.strokes.push(this.activeStroke);
+      changed = true;
+    } else if (
+      (this.tool === 'stroke-eraser' || this.tool === 'pixel-eraser') &&
+      this.wasErasedInGesture &&
+      this.preActionSnapshot
+    ) {
+      this.history.push(this.preActionSnapshot);
+      changed = true;
     }
 
     this.activeStroke = null;
     this.activePointerId = null;
+    this.preActionSnapshot = null;
+    this.wasErasedInGesture = false;
 
-    // Full redraw once at stroke completion to ensure flawless anti-aliasing
     this.redraw();
 
-    // Notify all subscribers of the updated stroke collection
-    this.notifyStrokesChanged();
+    if (changed) {
+      this.notifyHistoryChanged();
+      this.notifyStrokesChanged();
+    }
   }
 
   private handlePointerCancel(e: PointerEvent): void {
@@ -449,8 +630,16 @@ export class DrawingCanvas {
       // Ignore
     }
 
+    // Revert to snapshot on gesture cancellation
+    if (this.preActionSnapshot) {
+      this.strokes = this.preActionSnapshot;
+    }
+
     this.activeStroke = null;
     this.activePointerId = null;
+    this.preActionSnapshot = null;
+    this.wasErasedInGesture = false;
+
     this.redraw();
   }
 
@@ -465,6 +654,18 @@ export class DrawingCanvas {
         listener(currentStrokes);
       } catch (err) {
         console.error('Error in onStrokesChanged listener:', err);
+      }
+    }
+  }
+
+  private notifyHistoryChanged(): void {
+    const canUndo = this.canUndo();
+    const canRedo = this.canRedo();
+    for (const listener of this.historyChangeListeners) {
+      try {
+        listener(canUndo, canRedo);
+      } catch (err) {
+        console.error('Error in onHistoryChanged listener:', err);
       }
     }
   }

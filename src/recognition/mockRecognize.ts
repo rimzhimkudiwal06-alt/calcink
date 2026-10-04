@@ -10,9 +10,28 @@
 
 import type { Stroke, RecognizedSymbol } from '../types';
 
+let currentMockEquation = '18 + 4 × 3 =';
+
+/**
+ * Updates the mock equation for testing different equations and edge cases.
+ *
+ * @param expr - Expression to simulate (e.g. "3 + 3 =", "10 / 2 =", "5 / 0 =")
+ */
+export function setMockEquation(expr: string): void {
+  const trimmed = expr.trim();
+  currentMockEquation = trimmed.endsWith('=') ? trimmed : `${trimmed} =`;
+}
+
+/**
+ * Returns current mock equation string.
+ */
+export function getMockEquation(): string {
+  return currentMockEquation;
+}
+
 /**
  * Simulates recognizing handwritten strokes into mathematical symbols.
- * Returns a hard-coded sample expression "18 + 4 × 3 =" for testing.
+ * Returns symbols for the configured mock expression positioned relative to the drawn strokes.
  *
  * @param strokes - Array of strokes captured from the canvas
  * @returns Promise resolving to an array of recognized symbols
@@ -51,14 +70,43 @@ export async function recognize(strokes: Stroke[]): Promise<RecognizedSymbol[]> 
   const height = Math.max(30, maxY - minY);
   const baselineY = minY;
 
-  // Mock symbols layout: "18 + 4 × 3 ="
-  return [
-    { char: '1', bbox: { x: minX + 0, y: baselineY, w: 20, h: height }, confidence: 0.99 },
-    { char: '8', bbox: { x: minX + 25, y: baselineY, w: 24, h: height }, confidence: 0.98 },
-    { char: '+', bbox: { x: minX + 55, y: baselineY + height * 0.2, w: 22, h: height * 0.6 }, confidence: 0.99 },
-    { char: '4', bbox: { x: minX + 85, y: baselineY, w: 24, h: height }, confidence: 0.97 },
-    { char: '×', bbox: { x: minX + 115, y: baselineY + height * 0.25, w: 20, h: height * 0.5 }, confidence: 0.95 },
-    { char: '3', bbox: { x: minX + 140, y: baselineY, w: 22, h: height }, confidence: 0.98 },
-    { char: '=', bbox: { x: maxX + 10, y: baselineY + height * 0.2, w: 25, h: height * 0.5 }, confidence: 0.99 },
-  ];
+  // Split currentMockEquation into individual non-whitespace characters
+  const chars = currentMockEquation.replace(/\s+/g, '').split('');
+  if (chars.length === 0) {
+    return [];
+  }
+
+  // Calculate proportional spacing across the drawn width or standard character widths
+  const charWidth = Math.max(18, Math.min(32, Math.round(height * 0.6)));
+  const spacing = Math.max(6, Math.round(charWidth * 0.25));
+
+  const symbols: RecognizedSymbol[] = [];
+  let currentX = minX;
+
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const isEquals = ch === '=';
+    const isOperator = ch === '+' || ch === '-' || ch === '×' || ch === '*' || ch === '÷' || ch === '/';
+
+    // Last character '=' placed right at or after maxX
+    const symX = isEquals && i === chars.length - 1 ? Math.max(currentX, maxX + 8) : currentX;
+    const symY = isOperator || isEquals ? baselineY + height * 0.2 : baselineY;
+    const symH = isOperator || isEquals ? height * 0.6 : height;
+    const symW = isEquals ? charWidth * 1.1 : charWidth;
+
+    symbols.push({
+      char: ch,
+      bbox: {
+        x: symX,
+        y: symY,
+        w: symW,
+        h: symH,
+      },
+      confidence: 0.98,
+    });
+
+    currentX = symX + symW + spacing;
+  }
+
+  return symbols;
 }
