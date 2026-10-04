@@ -5,6 +5,9 @@
  * and subscribes to onStrokesChanged.
  */
 
+/// <reference types="vite-plugin-pwa/client" />
+import { registerSW } from 'virtual:pwa-register';
+registerSW({ immediate: true });
 import './style.css';
 import { DrawingCanvas } from './canvas/DrawingCanvas';
 import type { Stroke } from './types';

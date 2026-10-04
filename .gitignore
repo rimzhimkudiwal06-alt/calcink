@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+tools/model-build/hasy_data/
+tools/model-build/HASYv2.tar.*
