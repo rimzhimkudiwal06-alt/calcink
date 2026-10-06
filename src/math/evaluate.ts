@@ -1,12 +1,14 @@
 /**
- * CalcInk Math Engine & Expression Parser
+ * CalcInk Math Engine & Expression Parser (Phase 6: Variables & Advanced Math)
  *
- * Implements a 100% offline, zero-eval recursive descent parser for
- * arithmetic expressions supporting:
+ * Implements a 100% offline, zero-eval recursive descent parser for:
  * - Digits 0-9, decimals (.)
- * - Operators: +, -, ×, ÷, *, /
+ * - Operators: +, -, ×, ÷, *, /, ^ (power)
+ * - Variables & Scope: (e.g. "x = 10", then "x + 5 =" -> 15)
+ * - Implicit multiplication: "2x", "3(x)", "(x+1)(x-1)"
+ * - Standard functions: sin, cos, tan, sqrt, abs, ln, log
  * - Unary minus/plus (-3+5, 4×-2, 5--3)
- * - Operator precedence (BODMAS / PEMDAS)
+ * - Operator precedence (BODMAS / PEMDAS) & right-associative powers (2^3^2)
  * - Strict left-associativity (10-3-2 = 5, 24/4/2 = 3)
  * - Division by zero detection ("Undefined")
  * - Trailing '=' handling
@@ -17,14 +19,24 @@
 import type { EvalResult } from '../types';
 
 /**
+ * Extended result type supporting optional variable assignment indicator.
+ */
+export type ExtendedEvalResult = EvalResult & {
+  variable?: string;
+};
+
+/**
  * Token types produced by the lexer.
  */
 type TokenType =
   | 'NUMBER'
+  | 'VARIABLE'
+  | 'FUNCTION'
   | 'PLUS'
   | 'MINUS'
   | 'MULTIPLY'
   | 'DIVIDE'
+  | 'POWER'
   | 'LPAREN'
   | 'RPAREN'
   | 'EOF';
@@ -36,31 +48,24 @@ interface Token {
   pos: number;
 }
 
+const KNOWN_FUNCTIONS = new Set(['sin', 'cos', 'tan', 'sqrt', 'abs', 'ln', 'log']);
+
 /**
  * Strips floating-point representation noise like 0.30000000000000004 -> 0.3.
- *
- * @param num - Raw floating point number
- * @returns Cleaned number with precision artifacts stripped
  */
 export function cleanFloat(num: number): number {
   if (!isFinite(num)) return num;
-  // Convert -0 to 0
   if (Object.is(num, -0)) return 0;
-  // Round within 12 significant digits to eliminate binary IEEE-754 drift
   const cleaned = parseFloat(num.toPrecision(12));
   return Object.is(cleaned, -0) ? 0 : cleaned;
 }
 
 /**
  * Formats an evaluation number into a clean string for display.
- *
- * @param value - Numeric result
- * @returns Nicely formatted string without trailing zeroes
  */
 export function formatResult(value: number): string {
   const cleaned = cleanFloat(value);
   if (!isFinite(cleaned)) return 'Undefined';
-  // Avoid exponential notation for normal numbers
   if (Math.abs(cleaned) < 1e12 && Math.abs(cleaned) > 1e-6) {
     return cleaned.toString();
   }
@@ -69,7 +74,6 @@ export function formatResult(value: number): string {
 
 /**
  * Internal parsing exception used for controlled error propagation.
- * Never leaks outside evaluate().
  */
 class ParseError extends Error {
   public readonly isUndefined: boolean;
@@ -82,10 +86,11 @@ class ParseError extends Error {
 }
 
 /**
- * Tokenizes an expression string into an array of lexical tokens.
+ * Tokenizes an expression string into an array of lexical tokens,
+ * automatically inserting implicit multiplication tokens where standard in math notation.
  */
 function tokenize(input: string): Token[] {
-  const tokens: Token[] = [];
+  const rawTokens: Token[] = [];
   let i = 0;
   const len = input.length;
 
@@ -100,37 +105,43 @@ function tokenize(input: string): Token[] {
 
     // Single character operators
     if (ch === '+') {
-      tokens.push({ type: 'PLUS', raw: '+', pos: i });
+      rawTokens.push({ type: 'PLUS', raw: '+', pos: i });
       i++;
       continue;
     }
 
     if (ch === '-') {
-      tokens.push({ type: 'MINUS', raw: '-', pos: i });
+      rawTokens.push({ type: 'MINUS', raw: '-', pos: i });
       i++;
       continue;
     }
 
     if (ch === '*' || ch === '×') {
-      tokens.push({ type: 'MULTIPLY', raw: ch, pos: i });
+      rawTokens.push({ type: 'MULTIPLY', raw: ch, pos: i });
       i++;
       continue;
     }
 
     if (ch === '/' || ch === '÷') {
-      tokens.push({ type: 'DIVIDE', raw: ch, pos: i });
+      rawTokens.push({ type: 'DIVIDE', raw: ch, pos: i });
+      i++;
+      continue;
+    }
+
+    if (ch === '^') {
+      rawTokens.push({ type: 'POWER', raw: '^', pos: i });
       i++;
       continue;
     }
 
     if (ch === '(') {
-      tokens.push({ type: 'LPAREN', raw: '(', pos: i });
+      rawTokens.push({ type: 'LPAREN', raw: '(', pos: i });
       i++;
       continue;
     }
 
     if (ch === ')') {
-      tokens.push({ type: 'RPAREN', raw: ')', pos: i });
+      rawTokens.push({ type: 'RPAREN', raw: ')', pos: i });
       i++;
       continue;
     }
@@ -156,7 +167,24 @@ function tokenize(input: string): Token[] {
         throw new ParseError(`Malformed number at position ${start}`);
       }
 
-      tokens.push({ type: 'NUMBER', value: numVal, raw: numStr, pos: start });
+      rawTokens.push({ type: 'NUMBER', value: numVal, raw: numStr, pos: start });
+      continue;
+    }
+
+    // Identifiers (Variables and Math Functions, e.g. "x", "y", "radius", "sin")
+    if (/[a-zA-Z]/.test(ch)) {
+      const start = i;
+      while (i < len && /[a-zA-Z0-9]/.test(input[i])) {
+        i++;
+      }
+      const rawName = input.slice(start, i);
+      const lowerName = rawName.toLowerCase();
+
+      if (KNOWN_FUNCTIONS.has(lowerName)) {
+        rawTokens.push({ type: 'FUNCTION', raw: lowerName, pos: start });
+      } else {
+        rawTokens.push({ type: 'VARIABLE', raw: lowerName, pos: start });
+      }
       continue;
     }
 
@@ -165,8 +193,26 @@ function tokenize(input: string): Token[] {
       throw new ParseError(`Unexpected '.' at position ${i}`);
     }
 
-    // Any unrecognized character
     throw new ParseError(`Unexpected character '${ch}' at position ${i}`);
+  }
+
+  // Insert implicit multiplication: e.g. "2x" -> 2 * x, "2(3)" -> 2 * (3), "x(y)" -> x * (y)
+  const tokens: Token[] = [];
+  for (let idx = 0; idx < rawTokens.length; idx++) {
+    const cur = rawTokens[idx];
+    tokens.push(cur);
+
+    if (idx < rawTokens.length - 1) {
+      const next = rawTokens[idx + 1];
+      const curCanMultiply =
+        cur.type === 'NUMBER' || cur.type === 'VARIABLE' || cur.type === 'RPAREN';
+      const nextCanMultiply =
+        next.type === 'VARIABLE' || next.type === 'FUNCTION' || next.type === 'LPAREN';
+
+      if (curCanMultiply && nextCanMultiply) {
+        tokens.push({ type: 'MULTIPLY', raw: '*', pos: next.pos });
+      }
+    }
   }
 
   tokens.push({ type: 'EOF', raw: '', pos: len });
@@ -174,20 +220,23 @@ function tokenize(input: string): Token[] {
 }
 
 /**
- * Recursive Descent Parser implementing BODMAS/PEMDAS arithmetic grammar:
+ * Recursive Descent Parser with Variables & Operator Precedence:
  *
- * Expr        := Additive
- * Additive    := Multiplicative ( ('+' | '-') Multiplicative )*
- * Multiplicative := Unary ( ('*' | '/' | '×' | '÷') Unary )*
- * Unary       := ('+' | '-') Unary | Primary
- * Primary     := NUMBER | '(' Expr ')'
+ * Expr          := Additive
+ * Additive      := Multiplicative ( ('+' | '-') Multiplicative )*
+ * Multiplicative:= Power ( ('*' | '/' | '×' | '÷') Power )*
+ * Power         := Unary ( '^' Power )?   (Right-associative)
+ * Unary         := ('+' | '-') Unary | Primary
+ * Primary       := NUMBER | VARIABLE | FUNCTION '(' Expr ')' | '(' Expr ')'
  */
 class Parser {
   private tokens: Token[];
   private cursor: number = 0;
+  private scope: Record<string, number>;
 
-  constructor(tokens: Token[]) {
+  constructor(tokens: Token[], scope: Record<string, number> = {}) {
     this.tokens = tokens;
+    this.scope = scope;
   }
 
   private current(): Token {
@@ -211,15 +260,14 @@ class Parser {
     const result = this.parseAdditive();
 
     if (this.current().type !== 'EOF') {
-      throw new ParseError(`Unexpected token '${this.current().raw}' at position ${this.current().pos}`);
+      throw new ParseError(
+        `Unexpected token '${this.current().raw}' at position ${this.current().pos}`
+      );
     }
 
     return result;
   }
 
-  /**
-   * Additive expressions (+ and -) evaluated left-to-right.
-   */
   private parseAdditive(): number {
     let left = this.parseMultiplicative();
 
@@ -238,19 +286,15 @@ class Parser {
     return left;
   }
 
-  /**
-   * Multiplicative expressions (*, /, ×, ÷) evaluated left-to-right with division by zero check.
-   */
   private parseMultiplicative(): number {
-    let left = this.parseUnary();
+    let left = this.parsePower();
 
     while (true) {
       if (this.match('MULTIPLY')) {
-        const right = this.parseUnary();
+        const right = this.parsePower();
         left = left * right;
       } else if (this.match('DIVIDE')) {
-        const right = this.parseUnary();
-        // Division by zero check (both integer 0 and IEEE float 0)
+        const right = this.parsePower();
         if (right === 0 || !isFinite(left / right)) {
           throw new ParseError('Division by zero', true);
         }
@@ -263,9 +307,21 @@ class Parser {
     return left;
   }
 
-  /**
-   * Unary expressions (+x, -x, --x, 4*-2).
-   */
+  private parsePower(): number {
+    const left = this.parseUnary();
+
+    if (this.match('POWER')) {
+      const right = this.parsePower(); // Right-associative exponentiation
+      const result = Math.pow(left, right);
+      if (!isFinite(result)) {
+        throw new ParseError('Arithmetic overflow in power operation');
+      }
+      return result;
+    }
+
+    return left;
+  }
+
   private parseUnary(): number {
     if (this.match('PLUS')) {
       return this.parseUnary();
@@ -276,9 +332,6 @@ class Parser {
     return this.parsePrimary();
   }
 
-  /**
-   * Primary elements (numbers, parenthesized expressions).
-   */
   private parsePrimary(): number {
     const token = this.current();
 
@@ -286,10 +339,56 @@ class Parser {
       return token.value!;
     }
 
+    if (this.match('VARIABLE')) {
+      const varName = token.raw.toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(this.scope, varName)) {
+        const val = this.scope[varName];
+        if (typeof val === 'number' && isFinite(val)) {
+          return val;
+        }
+      }
+      throw new ParseError(`Undefined variable '${token.raw}'`);
+    }
+
+    if (this.match('FUNCTION')) {
+      const fnName = token.raw.toLowerCase();
+      if (!this.match('LPAREN')) {
+        throw new ParseError(`Expected '(' after function '${fnName}'`);
+      }
+      const arg = this.parseAdditive();
+      if (!this.match('RPAREN')) {
+        throw new ParseError(`Mismatched parenthesis: expected ')' after function argument`);
+      }
+
+      switch (fnName) {
+        case 'sin':
+          return Math.sin(arg);
+        case 'cos':
+          return Math.cos(arg);
+        case 'tan':
+          return Math.tan(arg);
+        case 'sqrt':
+          if (arg < 0) throw new ParseError('Square root of negative number', true);
+          return Math.sqrt(arg);
+        case 'abs':
+          return Math.abs(arg);
+        case 'ln':
+          if (arg <= 0) throw new ParseError('Natural logarithm of non-positive number', true);
+          return Math.log(arg);
+        case 'log':
+          if (arg <= 0) throw new ParseError('Logarithm of non-positive number', true);
+          return Math.log10(arg);
+        default:
+          throw new ParseError(`Unknown function '${fnName}'`);
+      }
+    }
+
     if (this.match('LPAREN')) {
       const expr = this.parseAdditive();
       if (!this.match('RPAREN')) {
-        throw new ParseError(`Mismatched parenthesis: expected ')' at position ${this.current().pos}`);
+        throw new ParseError(
+          `Mismatched parenthesis: expected ')' at position ${this.current().pos}`
+        );
       }
       return expr;
     }
@@ -302,32 +401,90 @@ class Parser {
   }
 }
 
-/**
- * Evaluates a mathematical expression string and returns an EvalResult.
- *
- * Guarantees:
- * - 100% offline, NEVER uses eval() or new Function()
- * - Never throws an unhandled exception
- * - Returns { ok: false, error: "Undefined" } for division by zero
- * - Returns { ok: false, error: "Syntax error" } for malformed expressions
- * - Cleans IEEE-754 floating point artifacts (e.g. 0.1 + 0.2 -> 0.3)
- * - Automatically ignores an optional trailing '=' sign
- *
- * @param expr - Expression string to evaluate (e.g. "18 + 4 × 3 =")
- * @returns EvalResult object { ok: true, value } or { ok: false, error }
- */
-export function evaluate(expr: string): EvalResult {
-  if (typeof expr !== 'string') {
-    return { ok: false, error: 'Syntax error' };
-  }
+export interface Assignment {
+  variable: string;
+  expression: string;
+}
 
-  // Pre-process: trim whitespace and strip trailing '=' (single or with trailing space)
+/**
+ * Checks whether an expression string is a variable assignment (e.g. "x = 10", "y = 2x + 1").
+ *
+ * @param expr - Expression string
+ * @returns Assignment details or null if standard equation
+ */
+export function parseAssignment(expr: string): Assignment | null {
+  if (typeof expr !== 'string') return null;
+
   let sanitized = expr.trim();
   if (sanitized.endsWith('=')) {
     sanitized = sanitized.slice(0, -1).trim();
   }
 
-  // If '=' is present anywhere inside the expression, that's invalid syntax
+  const eqIdx = sanitized.indexOf('=');
+  if (eqIdx === -1) return null;
+
+  const lhs = sanitized.slice(0, eqIdx).trim();
+  const rhs = sanitized.slice(eqIdx + 1).trim();
+
+  // LHS must be a valid single identifier
+  if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(lhs)) {
+    return null;
+  }
+
+  // RHS must not be empty or contain additional '='
+  if (!rhs || rhs.includes('=')) {
+    return null;
+  }
+
+  return {
+    variable: lhs.toLowerCase(),
+    expression: rhs,
+  };
+}
+
+/**
+ * Evaluates a mathematical expression string within an optional variable scope.
+ *
+ * Supports:
+ * - Direct expressions: "18 + 4 * 3 =" -> 30
+ * - Variables in expressions: "x + 5 =" with { x: 10 } -> 15
+ * - Assignments: "x = 10" -> stores x: 10 in scope and returns 10
+ * - Implicit multiplication: "2x" with { x: 3 } -> 6
+ * - Exponentiation: "x^2" with { x: 4 } -> 16
+ *
+ * @param expr - Expression string to evaluate
+ * @param scope - Optional variable key-value map
+ * @returns ExtendedEvalResult with status and evaluated value
+ */
+export function evaluate(
+  expr: string,
+  scope: Record<string, number> = {}
+): ExtendedEvalResult {
+  if (typeof expr !== 'string') {
+    return { ok: false, error: 'Syntax error' };
+  }
+
+  // Check for variable assignment: e.g. "x = 10", "y = 2x + 1"
+  const assignment = parseAssignment(expr);
+  if (assignment) {
+    const rhsResult = evaluate(assignment.expression, scope);
+    if (rhsResult.ok) {
+      scope[assignment.variable] = rhsResult.value;
+      return {
+        ok: true,
+        value: rhsResult.value,
+        variable: assignment.variable,
+      };
+    }
+    return rhsResult;
+  }
+
+  // Pre-process: strip trailing '='
+  let sanitized = expr.trim();
+  if (sanitized.endsWith('=')) {
+    sanitized = sanitized.slice(0, -1).trim();
+  }
+
   if (sanitized.includes('=')) {
     return { ok: false, error: 'Syntax error' };
   }
@@ -338,7 +495,7 @@ export function evaluate(expr: string): EvalResult {
 
   try {
     const tokens = tokenize(sanitized);
-    const parser = new Parser(tokens);
+    const parser = new Parser(tokens, scope);
     const rawResult = parser.parse();
 
     if (!isFinite(rawResult)) {

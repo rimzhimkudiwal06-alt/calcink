@@ -28,6 +28,7 @@ export interface ToolbarCallbacks {
   onBackgroundCycle?: () => void;
   onToggleMute?: () => void;
   onToggleDarkMode?: () => void;
+  onToggleGraph?: () => void;
 }
 
 export class Toolbar {
@@ -51,6 +52,7 @@ export class Toolbar {
   private muteIconContainer!: HTMLElement;
   private btnThemeToggle!: HTMLButtonElement;
   private themeIconContainer!: HTMLElement;
+  private btnGraphToggle!: HTMLButtonElement;
 
   private currentPattern: BackgroundPattern = 'ruled';
   private isMuted: boolean = false;
@@ -169,6 +171,16 @@ export class Toolbar {
           <button id="btn-theme-toggle" class="tool-btn" type="button" title="Dark Mode (D to toggle)" aria-label="Toggle dark mode theme" aria-pressed="false">
             <span id="theme-icon-container" class="toggle-icon-wrap"></span>
           </button>
+
+          <!-- Plot Function Graph Overlay Toggle (Phase 6) -->
+          <button id="btn-graph-toggle" class="tool-btn" type="button" title="Function Graph: y = 2x + 1 (G to toggle)" aria-label="Toggle function graph overlay">
+            <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="20" x2="21" y2="20"></line>
+              <line x1="4" y1="4" x2="4" y2="20"></line>
+              <polyline points="4 16 9 11 14 14 20 6"></polyline>
+            </svg>
+            <span class="tool-label">Graph</span>
+          </button>
         </div>
       </div>
     `;
@@ -189,6 +201,7 @@ export class Toolbar {
     this.muteIconContainer = this.container.querySelector('#mute-icon-container')!;
     this.btnThemeToggle = this.container.querySelector('#btn-theme-toggle')!;
     this.themeIconContainer = this.container.querySelector('#theme-icon-container')!;
+    this.btnGraphToggle = this.container.querySelector('#btn-graph-toggle')!;
 
     this.renderBgIcon();
     this.renderMuteIcon();
@@ -234,6 +247,10 @@ export class Toolbar {
 
     this.btnThemeToggle.addEventListener('click', () => {
       this.callbacks.onToggleDarkMode?.();
+    });
+
+    this.btnGraphToggle.addEventListener('click', () => {
+      this.callbacks.onToggleGraph?.();
     });
   }
 
@@ -403,6 +420,9 @@ export class Toolbar {
       } else if (e.key === 'd' || e.key === 'D') {
         e.preventDefault();
         this.callbacks.onToggleDarkMode?.();
+      } else if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        this.callbacks.onToggleGraph?.();
       }
     }
   }

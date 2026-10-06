@@ -16,6 +16,7 @@ import { DrawingCanvas, type ToolType } from './canvas/DrawingCanvas';
 import { AnswerLayer } from './canvas/AnswerLayer';
 import { SoundService } from './ui/sound';
 import { Toolbar } from './ui/Toolbar';
+import { GraphOverlay } from './ui/GraphOverlay';
 import { evaluate } from './math/evaluate';
 import { recognize, setMockEquation, getMockEquation } from './recognition/mockRecognize';
 import { processSymbols } from './math/lineGrouping';
@@ -49,8 +50,8 @@ app.innerHTML = `
   <header class="calcink-header">
     <div class="brand-section">
       <h1 class="brand-title">CalcInk</h1>
-      <span class="brand-badge">Phase 5</span>
-      <span class="brand-subtitle">Paper UI & Micro-interactions</span>
+      <span class="brand-badge">Phase 6</span>
+      <span class="brand-subtitle">Gestures, Variables & Plots</span>
     </div>
 
     <div id="toolbar-container"></div>
@@ -78,12 +79,13 @@ app.innerHTML = `
         <span class="kbd-hint"><kbd>X</kbd> Pixel Eraser</span>
         <span class="kbd-hint"><kbd>Ctrl+Z</kbd> Undo</span>
         <span class="kbd-hint"><kbd>Ctrl+Y</kbd> Redo</span>
-        <span class="kbd-hint"><kbd>B</kbd> Paper Style</span>
+        <span class="kbd-hint"><kbd>B</kbd> Paper</span>
         <span class="kbd-hint"><kbd>M</kbd> Mute</span>
-        <span class="kbd-hint"><kbd>D</kbd> Dark Mode</span>
+        <span class="kbd-hint"><kbd>D</kbd> Dark</span>
+        <span class="kbd-hint"><kbd>G</kbd> Graph</span>
         <span class="kbd-hint"><kbd>C</kbd> Clear</span>
       </div>
-      <span>Reactive Solver &bull; Stylus Pressure &bull; Web Audio Tick &bull; 100% Offline</span>
+      <span>Reactive Solver &bull; Scratch to Erase &bull; Variables &bull; Function Plotter</span>
     </footer>
   </main>
 `;
@@ -156,6 +158,13 @@ const answerLayer = new AnswerLayer(answerCanvasEl, {
 // Initialize SoundService (Web Audio procedural tick & haptic feedback)
 const soundService = new SoundService();
 
+// Initialize Mini Function Graph Overlay (Phase 6)
+const canvasWrapperEl = document.querySelector<HTMLElement>('.canvas-wrapper')!;
+const graphOverlay = new GraphOverlay(canvasWrapperEl, {
+  initialFormula: '2x + 1',
+  isDark: isDarkMode,
+});
+
 // Initialize Toolbar UI
 const toolbar = new Toolbar(toolbarContainer, {
   onToolChange: (tool: ToolType) => {
@@ -172,6 +181,9 @@ const toolbar = new Toolbar(toolbarContainer, {
   },
   onClear: () => {
     drawingCanvas.clear();
+    for (const key of Object.keys(persistentScope)) {
+      delete persistentScope[key];
+    }
   },
   onBackgroundCycle: () => {
     const nextPattern = backgroundLayer.cyclePattern();
@@ -189,6 +201,9 @@ const toolbar = new Toolbar(toolbarContainer, {
   onToggleDarkMode: () => {
     applyTheme(!isDarkMode);
   },
+  onToggleGraph: () => {
+    graphOverlay.toggle();
+  },
 });
 
 // Sync initial toolbar states
@@ -203,6 +218,7 @@ function applyTheme(dark: boolean): void {
   backgroundLayer.setDarkMode(isDarkMode);
   drawingCanvas.setDarkMode(isDarkMode);
   answerLayer.setDarkMode(isDarkMode);
+  graphOverlay.setDarkMode(isDarkMode);
   toolbar.setDarkMode(isDarkMode);
 
   try {
@@ -234,7 +250,8 @@ if (dprIndicatorEl) {
 // Ignores stale results using a monotonic request counter.
 // -----------------------------------------------------------------------------
 let recognitionRequestId = 0;
-let debounceTimeoutId: number | null = null;
+// Persistent Variable Scope across evaluations
+const persistentScope: Record<string, number> = {};
 
 const runPipeline = (strokes: Stroke[]) => {
   // Cancel pending debounce timer
@@ -247,6 +264,9 @@ const runPipeline = (strokes: Stroke[]) => {
   if (strokes.length === 0) {
     recognitionRequestId++; // Invalidate any inflight asynchronous request
     answerLayer.clear();
+    for (const key of Object.keys(persistentScope)) {
+      delete persistentScope[key];
+    }
     if (eqCountEl) {
       eqCountEl.textContent = '0';
     }
@@ -267,7 +287,7 @@ const runPipeline = (strokes: Stroke[]) => {
       }
 
       // Step 2 & 3: Line grouping, equation extraction, evaluation, coordinate positioning
-      const equationResults = processSymbols(symbols);
+      const equationResults = processSymbols(symbols, persistentScope);
 
       // Verify staleness again before rendering
       if (currentRequestId !== recognitionRequestId) {
@@ -280,6 +300,15 @@ const runPipeline = (strokes: Stroke[]) => {
       // Step 5: Sound & haptic micro-interaction if an equation was resolved
       if (equationResults.length > 0) {
         soundService.playAnswerTick();
+      }
+
+      // Step 6: Automatically plot if a function like y = 2x + 1 is recognized
+      for (const eq of equationResults) {
+        const lower = eq.expression.trim().toLowerCase();
+        if (lower.startsWith('y=') || lower.startsWith('y =')) {
+          graphOverlay.setFormula(eq.expression);
+          break;
+        }
       }
 
       if (eqCountEl) {
@@ -330,5 +359,6 @@ window.addEventListener('beforeunload', () => {
   drawingCanvas.destroy();
   answerLayer.destroy();
   backgroundLayer.destroy();
+  graphOverlay.destroy();
   soundService.destroy();
 });

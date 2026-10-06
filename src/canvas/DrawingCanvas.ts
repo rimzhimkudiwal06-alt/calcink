@@ -11,6 +11,7 @@ import type { Point, Stroke } from '../types';
 import { clientToCanvas, getCanvasDeviceSize } from './coords';
 import { HistoryManager } from './HistoryManager';
 import { isPointNearStroke, eraseFromStroke } from './geometry';
+import { analyzeScratchGesture, findScratchedStrokes } from './scratchGesture';
 
 export type ToolType = 'pen' | 'stroke-eraser' | 'pixel-eraser';
 
@@ -649,6 +650,30 @@ export class DrawingCanvas {
     let changed = false;
 
     if (this.tool === 'pen' && this.activeStroke && this.activeStroke.points.length > 0) {
+      // Phase 6: Check for Scratch-to-Erase gesture over existing strokes
+      const scratchAnalysis = analyzeScratchGesture(this.activeStroke);
+      if (scratchAnalysis.isScratch) {
+        const scratched = findScratchedStrokes(this.activeStroke, this.strokes);
+        if (scratched.length > 0) {
+          // Push pre-action state to undo stack
+          if (this.preActionSnapshot) {
+            this.history.push(this.preActionSnapshot);
+          }
+          const scratchedIds = new Set(scratched.map((s) => s.id));
+          this.strokes = this.strokes.filter((s) => !scratchedIds.has(s.id));
+
+          this.activeStroke = null;
+          this.activePointerId = null;
+          this.preActionSnapshot = null;
+          this.wasErasedInGesture = false;
+
+          this.redraw();
+          this.notifyHistoryChanged();
+          this.notifyStrokesChanged();
+          return;
+        }
+      }
+
       if (this.preActionSnapshot) {
         this.history.push(this.preActionSnapshot);
       }
