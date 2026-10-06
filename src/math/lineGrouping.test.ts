@@ -6,6 +6,8 @@ import {
   extractEquationFromLine,
   calculateAnswerPlacement,
   processSymbols,
+  isValidSymbol,
+  MIN_SYMBOL_CONFIDENCE,
 } from './lineGrouping';
 
 // Helper to create mock RecognizedSymbol
@@ -255,6 +257,53 @@ describe('lineGrouping & equation extractor', () => {
       expect(results.length).toBe(1);
       expect(results[0].displayText).toBe('0.3');
       expect(results[0].status).toBe('success');
+    });
+
+    it('filters out noisy symbols with confidence < 0.4 or malformed bounding boxes', () => {
+      const symbols: RecognizedSymbol[] = [
+        // Low confidence noise (< 0.40)
+        sym('9', 10, 100, 20, 40, 0.25),
+        // Invalid bbox (NaN or non-positive dimension)
+        { char: '7', bbox: { x: NaN, y: 100, w: 20, h: 40 }, confidence: 0.9 },
+        { char: '3', bbox: { x: 50, y: 100, w: 0, h: 40 }, confidence: 0.9 },
+        // Empty character
+        sym(' ', 80, 100, 20, 40, 0.9),
+        // Valid equation: 5 + 5 =
+        sym('5', 100, 100, 20, 40, 0.95),
+        sym('+', 125, 105, 20, 20, 0.95),
+        sym('5', 150, 100, 20, 40, 0.95),
+        sym('=', 175, 105, 20, 20, 0.95),
+      ];
+
+      const results = processSymbols(symbols);
+      expect(results.length).toBe(1);
+      expect(results[0].expression).toBe('5+5');
+      expect(results[0].displayText).toBe('10');
+      expect(results[0].status).toBe('success');
+    });
+  });
+
+  describe('isValidSymbol', () => {
+    it('returns true for valid symbols with confidence >= MIN_SYMBOL_CONFIDENCE', () => {
+      expect(isValidSymbol(sym('4', 10, 20, 30, 40, MIN_SYMBOL_CONFIDENCE))).toBe(true);
+      expect(isValidSymbol(sym('+', 10, 20, 30, 40, 0.99))).toBe(true);
+    });
+
+    it('returns false for confidence lower than MIN_SYMBOL_CONFIDENCE', () => {
+      expect(isValidSymbol(sym('4', 10, 20, 30, 40, 0.39))).toBe(false);
+      expect(isValidSymbol(sym('4', 10, 20, 30, 40, 0.1))).toBe(false);
+    });
+
+    it('returns false for empty or whitespace chars', () => {
+      expect(isValidSymbol(sym('', 10, 20, 30, 40, 0.9))).toBe(false);
+      expect(isValidSymbol(sym('   ', 10, 20, 30, 40, 0.9))).toBe(false);
+    });
+
+    it('returns false for non-finite or non-positive bounding box dimensions', () => {
+      expect(isValidSymbol({ char: '1', bbox: { x: Infinity, y: 0, w: 10, h: 10 }, confidence: 0.9 })).toBe(false);
+      expect(isValidSymbol({ char: '1', bbox: { x: 0, y: NaN, w: 10, h: 10 }, confidence: 0.9 })).toBe(false);
+      expect(isValidSymbol({ char: '1', bbox: { x: 0, y: 0, w: -5, h: 10 }, confidence: 0.9 })).toBe(false);
+      expect(isValidSymbol({ char: '1', bbox: { x: 0, y: 0, w: 10, h: 0 }, confidence: 0.9 })).toBe(false);
     });
   });
 });

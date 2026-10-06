@@ -483,7 +483,12 @@ export class DrawingCanvas {
     const rect = this.canvas.getBoundingClientRect();
     const { x, y } = clientToCanvas(e.clientX, e.clientY, rect);
 
-    this.preActionSnapshot = [...this.strokes];
+    this.preActionSnapshot = this.strokes.map((s) => ({
+      id: s.id,
+      width: s.width,
+      color: s.color,
+      points: s.points.map((p) => ({ ...p })),
+    }));
     this.wasErasedInGesture = false;
 
     if (this.tool === 'pen') {
@@ -512,9 +517,13 @@ export class DrawingCanvas {
       this.ctx.fill();
       this.ctx.restore();
     } else if (this.tool === 'stroke-eraser') {
-      this.applyStrokeEraser(x, y);
+      if (this.applyStrokeEraser(x, y)) {
+        this.redraw();
+      }
     } else if (this.tool === 'pixel-eraser') {
-      this.applyPixelEraser(x, y);
+      if (this.applyPixelEraser(x, y)) {
+        this.redraw();
+      }
     }
   }
 
@@ -524,6 +533,8 @@ export class DrawingCanvas {
     const rect = this.canvas.getBoundingClientRect();
     const events: PointerEvent[] =
       typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
+
+    let eraserChanged = false;
 
     for (const ev of events) {
       const { x, y } = clientToCanvas(ev.clientX, ev.clientY, rect);
@@ -555,14 +566,23 @@ export class DrawingCanvas {
         // Incremental rendering for 60+ FPS responsiveness
         this.drawNewestSegment(points);
       } else if (this.tool === 'stroke-eraser') {
-        this.applyStrokeEraser(x, y);
+        if (this.applyStrokeEraser(x, y)) {
+          eraserChanged = true;
+        }
       } else if (this.tool === 'pixel-eraser') {
-        this.applyPixelEraser(x, y);
+        if (this.applyPixelEraser(x, y)) {
+          eraserChanged = true;
+        }
       }
+    }
+
+    // Batch redraw to at most ONCE per pointermove event (Rule 3: 60 FPS)
+    if (eraserChanged) {
+      this.redraw();
     }
   }
 
-  private applyStrokeEraser(x: number, y: number): void {
+  private applyStrokeEraser(x: number, y: number): boolean {
     const originalCount = this.strokes.length;
     this.strokes = this.strokes.filter(
       (stroke) => !isPointNearStroke({ x, y }, stroke, this.strokeEraserRadius)
@@ -570,11 +590,12 @@ export class DrawingCanvas {
 
     if (this.strokes.length !== originalCount) {
       this.wasErasedInGesture = true;
-      this.redraw();
+      return true;
     }
+    return false;
   }
 
-  private applyPixelEraser(x: number, y: number): void {
+  private applyPixelEraser(x: number, y: number): boolean {
     let changed = false;
     const nextStrokes: Stroke[] = [];
 
@@ -589,8 +610,9 @@ export class DrawingCanvas {
     if (changed) {
       this.strokes = nextStrokes;
       this.wasErasedInGesture = true;
-      this.redraw();
+      return true;
     }
+    return false;
   }
 
   /**

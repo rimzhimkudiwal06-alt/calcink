@@ -18,7 +18,11 @@ import { SoundService } from './ui/sound';
 import { Toolbar } from './ui/Toolbar';
 import { GraphOverlay } from './ui/GraphOverlay';
 import { evaluate } from './math/evaluate';
-import { recognize, setMockEquation, getMockEquation } from './recognition/mockRecognize';
+// Recognition engine: Person A uses mockRecognize until Person B provides recognize.ts
+// To swap to Person B's model, change only the next line to:
+// import { recognize } from './recognition/recognize';
+import { recognize } from './recognition/mockRecognize';
+import * as mockEngine from './recognition/mockRecognize';
 import { processSymbols } from './math/lineGrouping';
 import type { Stroke } from './types';
 
@@ -27,8 +31,8 @@ import type { Stroke } from './types';
   evaluate: typeof evaluate;
   recognize: typeof recognize;
   processSymbols: typeof processSymbols;
-  setMockEquation: (expr: string) => void;
-  getMockEquation: () => string;
+  setMockEquation?: (expr: string) => void;
+  getMockEquation?: () => string;
 }).evaluate = evaluate;
 (window as unknown as {
   recognize: typeof recognize;
@@ -36,9 +40,11 @@ import type { Stroke } from './types';
 (window as unknown as {
   processSymbols: typeof processSymbols;
 }).processSymbols = processSymbols;
-(window as unknown as {
-  getMockEquation: typeof getMockEquation;
-}).getMockEquation = getMockEquation;
+if (typeof mockEngine.getMockEquation === 'function') {
+  (window as unknown as {
+    getMockEquation: () => string;
+  }).getMockEquation = mockEngine.getMockEquation;
+}
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
@@ -249,6 +255,7 @@ if (dprIndicatorEl) {
 // Debounced ~400ms after last stroke change.
 // Ignores stale results using a monotonic request counter.
 // -----------------------------------------------------------------------------
+let debounceTimeoutId: number | null = null;
 let recognitionRequestId = 0;
 // Persistent Variable Scope across evaluations
 const persistentScope: Record<string, number> = {};
@@ -322,16 +329,24 @@ const runPipeline = (strokes: Stroke[]) => {
 };
 
 // Wire up mock equation setter for browser testing
-(window as unknown as {
-  setMockEquation: (expr: string) => void;
-}).setMockEquation = (expr: string) => {
-  setMockEquation(expr);
-  const strokes = drawingCanvas.getStrokes();
-  if (strokes.length > 0) {
-    runPipeline(strokes);
-  }
-  console.log(`%c[CalcInk Mock Engine]%c Set mock equation to %c"${expr}"%c. Current strokes re-evaluated!`, 'color: #2563eb; font-weight: bold', 'color: inherit', 'color: #16a34a; font-weight: bold', 'color: inherit');
-};
+if (typeof mockEngine.setMockEquation === 'function') {
+  (window as unknown as {
+    setMockEquation: (expr: string) => void;
+  }).setMockEquation = (expr: string) => {
+    mockEngine.setMockEquation(expr);
+    const strokes = drawingCanvas.getStrokes();
+    if (strokes.length > 0) {
+      runPipeline(strokes);
+    }
+    console.log(
+      `%c[CalcInk Mock Engine]%c Set mock equation to %c"${expr}"%c. Current strokes re-evaluated!`,
+      'color: #2563eb; font-weight: bold',
+      'color: inherit',
+      'color: #16a34a; font-weight: bold',
+      'color: inherit'
+    );
+  };
+}
 
 // Subscribe to stroke changes (the stroke list is the source of truth)
 const unsubscribeStrokes = drawingCanvas.onStrokesChanged((strokes: Stroke[]) => {

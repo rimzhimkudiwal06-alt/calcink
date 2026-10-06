@@ -268,6 +268,43 @@ export function calculateAnswerPlacement(
 }
 
 /**
+ * Minimum confidence required for a recognized symbol to be processed.
+ * Filters out low-confidence hallucinations and background noise from Person B's neural net.
+ */
+export const MIN_SYMBOL_CONFIDENCE = 0.4;
+
+/**
+ * Validates whether a recognized symbol has plausible geometry, a non-empty character,
+ * and meets the minimum confidence threshold.
+ *
+ * @param sym - Candidate symbol
+ * @returns True if symbol is valid for mathematical equation grouping
+ */
+export function isValidSymbol(sym: RecognizedSymbol): boolean {
+  if (!sym || typeof sym.char !== 'string' || sym.char.trim() === '') {
+    return false;
+  }
+  if (typeof sym.confidence === 'number' && (Number.isNaN(sym.confidence) || sym.confidence < MIN_SYMBOL_CONFIDENCE)) {
+    return false;
+  }
+  const { bbox } = sym;
+  if (!bbox) {
+    return false;
+  }
+  if (
+    !Number.isFinite(bbox.x) ||
+    !Number.isFinite(bbox.y) ||
+    !Number.isFinite(bbox.w) ||
+    !Number.isFinite(bbox.h) ||
+    bbox.w <= 0 ||
+    bbox.h <= 0
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * End-to-end pipeline: Takes recognized symbols, groups them into lines,
  * extracts equations, evaluates them, and returns render-ready EquationResults.
  *
@@ -287,7 +324,13 @@ export function processSymbols(
     return [];
   }
 
-  const lines = groupSymbolsIntoLines(symbols);
+  // Filter out noise, low-confidence symbols (<0.40), and malformed bounding boxes
+  const validSymbols = symbols.filter(isValidSymbol);
+  if (validSymbols.length === 0) {
+    return [];
+  }
+
+  const lines = groupSymbolsIntoLines(validSymbols);
   const results: EquationResult[] = [];
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
