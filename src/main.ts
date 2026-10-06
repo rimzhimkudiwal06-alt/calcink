@@ -18,10 +18,9 @@ import { DrawingCanvas, type ToolType } from './canvas/DrawingCanvas';
 import { AnswerLayer } from './canvas/AnswerLayer';
 import { Toolbar } from './ui/Toolbar';
 import { evaluate } from './math/evaluate';
-import { recognize, setMockEquation, getMockEquation } from './recognition/mockRecognize';
+import { recognize, StaleResultError } from './recognition/index';
 import { processSymbols } from './math/lineGrouping';
 import type { Stroke } from './types';
-import { attachRecognition } from './recognition/attach';
 
 // Expose testing helpers globally for browser console verification
 (window as unknown as {
@@ -38,12 +37,9 @@ import { attachRecognition } from './recognition/attach';
   processSymbols: typeof processSymbols;
 }).processSymbols = processSymbols;
 (window as unknown as {
-  getMockEquation: typeof getMockEquation;
-}).getMockEquation = getMockEquation;
-(window as unknown as {
   setMockEquation: (expr: string) => void;
 }).setMockEquation = (expr: string) => {
-  setMockEquation(expr);
+
   const strokes = drawingCanvas.getStrokes();
   if (strokes.length > 0) {
     runPipeline(strokes);
@@ -147,7 +143,6 @@ const unsubscribeHistory = drawingCanvas.onHistoryChanged((canUndo, canRedo) => 
   toolbar.updateHistory(canUndo, canRedo);
 });
 
-attachRecognition(drawingCanvas, canvasElement);
 
 // UI stat elements
 const eqCountEl = document.querySelector<HTMLSpanElement>('#eq-count');
@@ -192,6 +187,7 @@ const runPipeline = (strokes: Stroke[]) => {
     try {
       // Step 1: recognize strokes -> recognized symbols
       const symbols = await recognize(strokes);
+      console.log('[CalcInk] read:', symbols.map((s) => `${s.char}(${s.confidence.toFixed(2)})`).join(' '));
 
       // Check if a newer stroke change arrived while recognize() was running
       if (currentRequestId !== recognitionRequestId) {
@@ -214,7 +210,9 @@ const runPipeline = (strokes: Stroke[]) => {
       }
     } catch (err) {
       // Rule 5: Never throw unhandled exceptions
-      console.error('[CalcInk] Pipeline recognition error:', err);
+      if (!(err instanceof StaleResultError)) {
+        console.error('[CalcInk] Pipeline recognition error:', err);
+      }
     }
   }, 400);
 };

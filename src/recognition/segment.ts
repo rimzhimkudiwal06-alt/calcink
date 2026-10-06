@@ -26,7 +26,7 @@ export interface SegmentationConfig {
 
 export const DEFAULT_SEGMENTATION_CONFIG: SegmentationConfig = {
   maxTimeGapMs: 400,
-  barOverlapThreshold: 0.5,
+  barOverlapThreshold: 0.3,
   stackedGapRatio: 0.6,
   divDotGapRatio: 0.8,
   dotSizeRatio: 0.3,
