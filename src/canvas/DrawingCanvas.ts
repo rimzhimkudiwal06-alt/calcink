@@ -3,6 +3,7 @@
  *
  * Implements a high-performance (60+ FPS), high-DPI aware,
  * touch & stylus friendly digital ink canvas with Bezier curve smoothing,
+ * pressure-sensitive ink feel (pen pressure vs. mouse fallback),
  * full undo/redo stacks, whole stroke eraser, and pixel eraser.
  */
 
@@ -18,33 +19,57 @@ export interface DrawingCanvasOptions {
   strokeColor?: string;
   tool?: ToolType;
   maxHistory?: number;
+  isDark?: boolean;
+}
+
+/**
+ * Computes dynamic stroke width based on pen pressure.
+ * When pressure is unavailable (e.g. mouse), falls back to constant baseWidth.
+ *
+ * @param baseWidth - Nominal stroke width in CSS pixels
+ * @param pressure - Optional hardware pressure reading from 0.0 to 1.0
+ * @returns Computed rendering width in CSS pixels
+ */
+export function computePointWidth(baseWidth: number, pressure?: number): number {
+  if (pressure === undefined || pressure <= 0) {
+    return baseWidth;
+  }
+  // Stylus pressure scale: ranges smoothly from 0.4x up to 1.6x of nominal width
+  const scale = 0.4 + 1.2 * Math.max(0.05, Math.min(1, pressure));
+  return Math.max(1, baseWidth * scale);
 }
 
 /**
  * Pure rendering function that draws a single stroke onto a Canvas 2D context
- * using quadratic Bezier curve smoothing through midpoints.
+ * using quadratic Bezier curve smoothing through midpoints and rounded caps.
+ * Adapts between variable-width pen pressure and high-performance constant width.
  *
  * @param ctx - The 2D rendering context (already scaled for DPR)
  * @param stroke - The stroke data to render
+ * @param fallbackColor - Optional theme fallback color if stroke has no color
  */
 export function renderStroke(
   ctx: CanvasRenderingContext2D,
-  stroke: Stroke
+  stroke: Stroke,
+  fallbackColor?: string
 ): void {
   const pts = stroke.points;
   if (!pts || pts.length === 0) return;
 
+  const strokeColor = stroke.color || fallbackColor || '#1e293b';
+  const baseWidth = stroke.width || 3;
+
   ctx.save();
-  ctx.strokeStyle = stroke.color || '#1e293b';
-  ctx.fillStyle = stroke.color || '#1e293b';
-  ctx.lineWidth = stroke.width || 3;
+  ctx.strokeStyle = strokeColor;
+  ctx.fillStyle = strokeColor;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
   // Case 1: Single point (tap/dot)
   if (pts.length === 1) {
+    const dotWidth = computePointWidth(baseWidth, pts[0].pressure);
     ctx.beginPath();
-    ctx.arc(pts[0].x, pts[0].y, Math.max(1, stroke.width / 2), 0, Math.PI * 2);
+    ctx.arc(pts[0].x, pts[0].y, Math.max(1, dotWidth / 2), 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     return;
@@ -52,6 +77,11 @@ export function renderStroke(
 
   // Case 2: Exactly two points (straight segment)
   if (pts.length === 2) {
+    const avgPressure =
+      pts[0].pressure !== undefined && pts[1].pressure !== undefined
+        ? (pts[0].pressure + pts[1].pressure) / 2
+        : pts[0].pressure ?? pts[1].pressure;
+    ctx.lineWidth = computePointWidth(baseWidth, avgPressure);
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     ctx.lineTo(pts[1].x, pts[1].y);
@@ -60,7 +90,44 @@ export function renderStroke(
     return;
   }
 
-  // Case 3: 3+ points -> Smooth curve using quadratic Bezier through midpoints
+  // Check if stroke has varying pen pressure
+  const hasVaryingPressure = pts.some(
+    (p) => p.pressure !== undefined && p.pressure > 0 && Math.abs(p.pressure - 0.5) > 0.05
+  );
+
+  // Case 3a: Stylus with pressure sensitivity -> Multi-segment Bézier with variable width
+  if (hasVaryingPressure) {
+    let prevMidX = pts[0].x;
+    let prevMidY = pts[0].y;
+
+    for (let i = 1; i < pts.length - 1; i++) {
+      const nextMidX = (pts[i].x + pts[i + 1].x) / 2;
+      const nextMidY = (pts[i].y + pts[i + 1].y) / 2;
+
+      ctx.lineWidth = computePointWidth(baseWidth, pts[i].pressure);
+      ctx.beginPath();
+      ctx.moveTo(prevMidX, prevMidY);
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, nextMidX, nextMidY);
+      ctx.stroke();
+
+      prevMidX = nextMidX;
+      prevMidY = nextMidY;
+    }
+
+    // Connect final segment
+    const last = pts[pts.length - 1];
+    ctx.lineWidth = computePointWidth(baseWidth, last.pressure);
+    ctx.beginPath();
+    ctx.moveTo(prevMidX, prevMidY);
+    ctx.lineTo(last.x, last.y);
+    ctx.stroke();
+
+    ctx.restore();
+    return;
+  }
+
+  // Case 3b: Mouse or constant width -> Single contiguous path for max 60+ FPS performance
+  ctx.lineWidth = baseWidth;
   ctx.beginPath();
   ctx.moveTo(pts[0].x, pts[0].y);
 
@@ -70,7 +137,6 @@ export function renderStroke(
     ctx.quadraticCurveTo(pts[i].x, pts[i].y, midX, midY);
   }
 
-  // Finish connecting the last midpoint to the final point
   const last = pts[pts.length - 1];
   ctx.lineTo(last.x, last.y);
   ctx.stroke();
@@ -98,6 +164,7 @@ export class DrawingCanvas {
   private tool: ToolType = 'pen';
   private strokeWidth: number;
   private strokeColor: string;
+  private isDark: boolean = false;
   private strokeEraserRadius: number = 10;
   private pixelEraserRadius: number = 12;
 
@@ -134,7 +201,8 @@ export class DrawingCanvas {
 
     this.tool = options.tool ?? 'pen';
     this.strokeWidth = options.strokeWidth ?? 3;
-    this.strokeColor = options.strokeColor ?? '#1e293b';
+    this.isDark = options.isDark ?? false;
+    this.strokeColor = options.strokeColor ?? (this.isDark ? '#f8fafc' : '#1e293b');
     this.history = new HistoryManager(options.maxHistory ?? 50);
 
     // Prevent default touch gestures (scrolling, zooming) over canvas
@@ -155,7 +223,9 @@ export class DrawingCanvas {
     this.canvas.addEventListener('pointercancel', this.boundPointerCancel);
 
     // Watch for canvas resizing to maintain sharp high-DPI resolution
-    window.addEventListener('resize', this.boundWindowResize);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('resize', this.boundWindowResize);
+    }
     if (typeof ResizeObserver !== 'undefined') {
       this.resizeObserver = new ResizeObserver(() => {
         this.handleResize();
@@ -175,7 +245,7 @@ export class DrawingCanvas {
     const rect = this.canvas.getBoundingClientRect();
     const cssWidth = rect.width > 0 ? rect.width : (this.canvas.clientWidth || 300);
     const cssHeight = rect.height > 0 ? rect.height : (this.canvas.clientHeight || 150);
-    this.dpr = window.devicePixelRatio || 1;
+    this.dpr = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
 
     const { width, height } = getCanvasDeviceSize(cssWidth, cssHeight, this.dpr);
 
@@ -203,15 +273,36 @@ export class DrawingCanvas {
     // Clear whole drawing area
     this.ctx.clearRect(0, 0, cssWidth, cssHeight);
 
+    const defaultColor = this.isDark ? '#f8fafc' : '#1e293b';
+
     // Render every completed stroke
     for (const stroke of this.strokes) {
-      renderStroke(this.ctx, stroke);
+      // Ensure default stroke color adapts to active paper theme
+      const strokeToRender =
+        !stroke.color || stroke.color === '#1e293b' || stroke.color === '#f8fafc'
+          ? { ...stroke, color: defaultColor }
+          : stroke;
+      renderStroke(this.ctx, strokeToRender, defaultColor);
     }
 
     // Also render active stroke if in progress
     if (this.activeStroke) {
-      renderStroke(this.ctx, this.activeStroke);
+      renderStroke(this.ctx, this.activeStroke, defaultColor);
     }
+  }
+
+  /**
+   * Sets dark mode state and updates default ink color.
+   */
+  public setDarkMode(isDark: boolean): void {
+    if (this.isDark === isDark) return;
+    this.isDark = isDark;
+    if (this.strokeColor === '#1e293b' && isDark) {
+      this.strokeColor = '#f8fafc';
+    } else if (this.strokeColor === '#f8fafc' && !isDark) {
+      this.strokeColor = '#1e293b';
+    }
+    this.redraw();
   }
 
   /**
@@ -223,9 +314,6 @@ export class DrawingCanvas {
 
   /**
    * Replaces the stroke list with a new set of strokes and triggers redraw.
-   *
-   * @param strokes - New list of strokes
-   * @param notify - Whether to fire onStrokesChanged callback (default: true)
    */
   public setStrokes(strokes: Stroke[], notify: boolean = true): void {
     this.strokes = [...strokes];
@@ -237,13 +325,10 @@ export class DrawingCanvas {
 
   /**
    * Clears all strokes from the canvas. This operation is fully undoable!
-   *
-   * @param notify - Whether to fire onStrokesChanged callback (default: true)
    */
   public clear(notify: boolean = true): void {
     if (this.strokes.length === 0) return;
 
-    // Push state to undo stack before clearing
     this.history.push(this.strokes);
 
     this.strokes = [];
@@ -259,8 +344,6 @@ export class DrawingCanvas {
 
   /**
    * Undoes the last drawing or erasing operation.
-   *
-   * @returns True if an undo action was performed
    */
   public undo(): boolean {
     const previous = this.history.undo(this.strokes);
@@ -275,8 +358,6 @@ export class DrawingCanvas {
 
   /**
    * Redoes the last undone operation.
-   *
-   * @returns True if a redo action was performed
    */
   public redo(): boolean {
     const next = this.history.redo(this.strokes);
@@ -297,58 +378,33 @@ export class DrawingCanvas {
     return this.history.canRedo();
   }
 
-  /**
-   * Sets the active tool ('pen' | 'stroke-eraser' | 'pixel-eraser').
-   */
   public setTool(tool: ToolType): void {
     this.tool = tool;
     this.updateCursor();
   }
 
-  /**
-   * Gets the currently active tool.
-   */
   public getTool(): ToolType {
     return this.tool;
   }
 
-  /**
-   * Sets current stroke drawing width in CSS pixels.
-   */
   public setStrokeWidth(width: number): void {
     this.strokeWidth = Math.max(1, width);
-    // Also scale eraser radii proportionally for comfortable ergonomics
     this.strokeEraserRadius = Math.max(8, this.strokeWidth * 2.5);
     this.pixelEraserRadius = Math.max(8, this.strokeWidth * 3);
   }
 
-  /**
-   * Gets current stroke drawing width.
-   */
   public getStrokeWidth(): number {
     return this.strokeWidth;
   }
 
-  /**
-   * Sets current stroke drawing color.
-   */
   public setStrokeColor(color: string): void {
     this.strokeColor = color;
   }
 
-  /**
-   * Gets current stroke drawing color.
-   */
   public getStrokeColor(): string {
     return this.strokeColor;
   }
 
-  /**
-   * Subscribes to stroke changes.
-   *
-   * @param callback - Function invoked whenever strokes are added, updated, or cleared
-   * @returns Unsubscribe function to clean up listener
-   */
   public onStrokesChanged(callback: (strokes: Stroke[]) => void): () => void {
     this.strokeChangeListeners.add(callback);
     return () => {
@@ -356,33 +412,25 @@ export class DrawingCanvas {
     };
   }
 
-  /**
-   * Subscribes to undo/redo availability updates.
-   *
-   * @param callback - Function receiving (canUndo, canRedo) booleans
-   * @returns Unsubscribe function
-   */
   public onHistoryChanged(
     callback: (canUndo: boolean, canRedo: boolean) => void
   ): () => void {
     this.historyChangeListeners.add(callback);
-    // Immediately report current state upon subscription
     callback(this.canUndo(), this.canRedo());
     return () => {
       this.historyChangeListeners.delete(callback);
     };
   }
 
-  /**
-   * Cleans up all event listeners and observers to prevent memory leaks.
-   */
   public destroy(): void {
     this.canvas.removeEventListener('pointerdown', this.boundPointerDown);
     this.canvas.removeEventListener('pointermove', this.boundPointerMove);
     this.canvas.removeEventListener('pointerup', this.boundPointerUp);
     this.canvas.removeEventListener('pointercancel', this.boundPointerCancel);
 
-    window.removeEventListener('resize', this.boundWindowResize);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('resize', this.boundWindowResize);
+    }
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
@@ -391,10 +439,6 @@ export class DrawingCanvas {
     this.strokeChangeListeners.clear();
     this.historyChangeListeners.clear();
   }
-
-  // -------------------------------------------------------------
-  // Tool Cursors
-  // -------------------------------------------------------------
 
   private updateCursor(): void {
     switch (this.tool) {
@@ -412,11 +456,20 @@ export class DrawingCanvas {
   // Pointer Event Handlers
   // -------------------------------------------------------------
 
-  private handlePointerDown(e: PointerEvent): void {
-    // Only accept primary button (left click / touch / stylus tip)
-    if (e.button !== 0 && e.buttons !== 1) return;
+  /**
+   * Extracts stylus hardware pressure, falling back to undefined for mouse
+   * to guarantee smooth constant width.
+   */
+  private extractPressure(e: PointerEvent): number | undefined {
+    if (e.pointerType === 'pen' && e.pressure > 0) {
+      return e.pressure;
+    }
+    // Mouse fallback: undefined (computes constant width)
+    return undefined;
+  }
 
-    // Single active pointer only
+  private handlePointerDown(e: PointerEvent): void {
+    if (e.button !== 0 && e.buttons !== 1) return;
     if (this.activePointerId !== null) return;
 
     this.activePointerId = e.pointerId;
@@ -429,16 +482,16 @@ export class DrawingCanvas {
     const rect = this.canvas.getBoundingClientRect();
     const { x, y } = clientToCanvas(e.clientX, e.clientY, rect);
 
-    // Save state snapshot for potential undo
     this.preActionSnapshot = [...this.strokes];
     this.wasErasedInGesture = false;
 
     if (this.tool === 'pen') {
+      const pressure = this.extractPressure(e);
       const point: Point = {
         x,
         y,
         t: e.timeStamp || Date.now(),
-        pressure: e.pressure > 0 ? e.pressure : 0.5,
+        pressure,
       };
 
       const strokeId = `stroke_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -450,10 +503,11 @@ export class DrawingCanvas {
       };
 
       // Immediately render starting dot
+      const dotWidth = computePointWidth(this.strokeWidth, pressure);
       this.ctx.save();
       this.ctx.fillStyle = this.strokeColor;
       this.ctx.beginPath();
-      this.ctx.arc(x, y, Math.max(1, this.strokeWidth / 2), 0, Math.PI * 2);
+      this.ctx.arc(x, y, Math.max(1, dotWidth / 2), 0, Math.PI * 2);
       this.ctx.fill();
       this.ctx.restore();
     } else if (this.tool === 'stroke-eraser') {
@@ -467,8 +521,6 @@ export class DrawingCanvas {
     if (e.pointerId !== this.activePointerId) return;
 
     const rect = this.canvas.getBoundingClientRect();
-
-    // Use getCoalescedEvents for higher frequency stylus/pen hardware sampling
     const events: PointerEvent[] =
       typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
 
@@ -489,16 +541,17 @@ export class DrawingCanvas {
           }
         }
 
+        const pressure = this.extractPressure(ev);
         const point: Point = {
           x,
           y,
           t: ev.timeStamp || Date.now(),
-          pressure: ev.pressure > 0 ? ev.pressure : 0.5,
+          pressure,
         };
 
         points.push(point);
 
-        // INCREMENTAL DRAWING: Draw only newest segment to guarantee 60+ FPS
+        // Incremental rendering for 60+ FPS responsiveness
         this.drawNewestSegment(points);
       } else if (this.tool === 'stroke-eraser') {
         this.applyStrokeEraser(x, y);
@@ -510,7 +563,6 @@ export class DrawingCanvas {
 
   private applyStrokeEraser(x: number, y: number): void {
     const originalCount = this.strokes.length;
-    // Remove any stroke that touches the eraser circle
     this.strokes = this.strokes.filter(
       (stroke) => !isPointNearStroke({ x, y }, stroke, this.strokeEraserRadius)
     );
@@ -547,9 +599,12 @@ export class DrawingCanvas {
     const len = pts.length;
     if (len < 2) return;
 
+    const lastPt = pts[len - 1];
+    const segmentWidth = computePointWidth(this.strokeWidth, lastPt.pressure);
+
     this.ctx.save();
     this.ctx.strokeStyle = this.strokeColor;
-    this.ctx.lineWidth = this.strokeWidth;
+    this.ctx.lineWidth = segmentWidth;
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
 
@@ -630,7 +685,6 @@ export class DrawingCanvas {
       // Ignore
     }
 
-    // Revert to snapshot on gesture cancellation
     if (this.preActionSnapshot) {
       this.strokes = this.preActionSnapshot;
     }

@@ -4,24 +4,27 @@
  * Implements a dedicated, high-DPI aware overlay canvas positioned directly
  * over the primary drawing canvas. Configured with `pointer-events: none` to
  * ensure zero interference with 60+ FPS user drawing gestures.
+ *
+ * Features:
+ * - Fluid fade and scale-in animation via requestAnimationFrame
+ * - Guaranteed rAF cleanup on rapid updates and unmount
+ * - Vibrant fountain pen blue ink styling
+ * - Theme-aware palette switching for dark paper
  */
 
 import type { EquationResult } from '../math/lineGrouping';
 import { getCanvasDeviceSize } from './coords';
 
 export interface AnswerLayerOptions {
-  /** Primary ink color for evaluated mathematical answers (default: vibrant ink blue) */
+  /** Primary ink color for evaluated mathematical answers (default: vibrant fountain ink blue) */
   successColor?: string;
-  /** Ink color for division by zero ("Undefined") (default: dark crimson) */
+  /** Ink color for division by zero ("Undefined") (default: crimson ink) */
   undefinedColor?: string;
   /** Ink color for syntax errors ("?") (default: subtle muted slate) */
   syntaxErrorColor?: string;
+  isDark?: boolean;
 }
 
-/**
- * AnswerLayer manages rendering calculated mathematical results directly onto
- * the canvas next to handwritten terminal '=' signs.
- */
 export class AnswerLayer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -29,19 +32,20 @@ export class AnswerLayer {
 
   private answers: EquationResult[] = [];
 
-  private successColor: string;
-  private undefinedColor: string;
-  private syntaxErrorColor: string;
+  private successColor: string = '#1d4ed8';
+  private undefinedColor: string = '#b91c1c';
+  private syntaxErrorColor: string = 'rgba(100, 116, 139, 0.65)';
+  private isDark: boolean = false;
+
+  // Animation controller
+  private animFrameId: number | null = null;
+  private animStartTime: number = 0;
+  private readonly animDurationMs: number = 220;
+  private currentAnimProgress: number = 1;
 
   private boundResize: () => void;
   private resizeObserver: ResizeObserver | null = null;
 
-  /**
-   * Initializes the AnswerLayer on top of the given HTMLCanvasElement.
-   *
-   * @param canvas - The overlay canvas element
-   * @param options - Visual styling configuration
-   */
   constructor(canvas: HTMLCanvasElement, options: AnswerLayerOptions = {}) {
     this.canvas = canvas;
     const context = canvas.getContext('2d');
@@ -50,16 +54,19 @@ export class AnswerLayer {
     }
     this.ctx = context;
 
-    this.successColor = options.successColor ?? '#1d4ed8'; // Vibrant ink blue
-    this.undefinedColor = options.undefinedColor ?? '#b91c1c'; // Crimson ink
-    this.syntaxErrorColor = options.syntaxErrorColor ?? 'rgba(100, 116, 139, 0.65)'; // Subtle slate
+    this.isDark = options.isDark ?? false;
+    this.updateColors();
 
-    // Ensure pointer events pass directly through to the drawing canvas below
+    if (options.successColor) this.successColor = options.successColor;
+    if (options.undefinedColor) this.undefinedColor = options.undefinedColor;
+    if (options.syntaxErrorColor) this.syntaxErrorColor = options.syntaxErrorColor;
+
     this.canvas.style.pointerEvents = 'none';
 
-    // Handle high-DPI scaling and window resizing
     this.boundResize = this.handleResize.bind(this);
-    window.addEventListener('resize', this.boundResize);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('resize', this.boundResize);
+    }
 
     if (typeof ResizeObserver !== 'undefined') {
       this.resizeObserver = new ResizeObserver(() => {
@@ -72,13 +79,38 @@ export class AnswerLayer {
   }
 
   /**
+   * Sets up color tokens appropriate for light or dark paper themes.
+   */
+  private updateColors(): void {
+    if (this.isDark) {
+      this.successColor = '#60a5fa'; // Radiant royal blue ink for dark paper
+      this.undefinedColor = '#f87171'; // Luminous crimson
+      this.syntaxErrorColor = 'rgba(148, 163, 184, 0.7)'; // Lighter slate
+    } else {
+      this.successColor = '#1d4ed8'; // Classic vibrant fountain pen blue ink
+      this.undefinedColor = '#b91c1c'; // Crimson ink
+      this.syntaxErrorColor = 'rgba(100, 116, 139, 0.65)'; // Subtle slate
+    }
+  }
+
+  /**
+   * Toggles dark mode styling and repaints answers.
+   */
+  public setDarkMode(isDark: boolean): void {
+    if (this.isDark === isDark) return;
+    this.isDark = isDark;
+    this.updateColors();
+    this.redraw();
+  }
+
+  /**
    * Configures canvas buffer size based on devicePixelRatio and scales 2D context.
    */
   public setupDprAndSize(): void {
     const rect = this.canvas.getBoundingClientRect();
     const cssWidth = rect.width > 0 ? rect.width : (this.canvas.clientWidth || 300);
     const cssHeight = rect.height > 0 ? rect.height : (this.canvas.clientHeight || 150);
-    this.dpr = window.devicePixelRatio || 1;
+    this.dpr = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
 
     const { width, height } = getCanvasDeviceSize(cssWidth, cssHeight, this.dpr);
 
@@ -87,27 +119,72 @@ export class AnswerLayer {
       this.canvas.height = height;
     }
 
-    // High-DPI transformation matrix
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-
-    // Re-render answers after resize
     this.redraw();
   }
 
   /**
-   * Updates the list of displayed answers and triggers a canvas redraw.
+   * Updates the list of displayed answers and triggers a smooth fade & scale-in animation.
    *
    * @param answers - Array of EquationResults produced by the math pipeline
+   * @param animate - Whether to run the entrance animation (default: true)
    */
-  public renderAnswers(answers: EquationResult[]): void {
+  public renderAnswers(answers: EquationResult[], animate: boolean = true): void {
+    // Stop any in-progress animation frame to avoid competing render loops (Rule 7)
+    this.stopAnimation();
+
     this.answers = [...answers];
-    this.redraw();
+
+    if (this.answers.length === 0) {
+      this.clearCanvas();
+      return;
+    }
+
+    if (!animate) {
+      this.currentAnimProgress = 1;
+      this.redraw();
+      return;
+    }
+
+    // Start entrance animation
+    this.animStartTime = performance.now();
+    this.currentAnimProgress = 0;
+
+    const step = (timestamp: number) => {
+      const elapsed = timestamp - this.animStartTime;
+      const t = Math.min(1, elapsed / this.animDurationMs);
+
+      // Ease-out cubic curve: fast entrance with gentle deceleration
+      this.currentAnimProgress = 1 - Math.pow(1 - t, 3);
+      this.redraw();
+
+      if (t < 1) {
+        this.animFrameId = requestAnimationFrame(step);
+      } else {
+        this.animFrameId = null;
+        this.currentAnimProgress = 1;
+        this.redraw();
+      }
+    };
+
+    this.animFrameId = requestAnimationFrame(step);
   }
 
   /**
-   * Clears all answers and erases the overlay canvas.
+   * Cancels any active requestAnimationFrame loop.
+   */
+  private stopAnimation(): void {
+    if (this.animFrameId !== null) {
+      cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    }
+  }
+
+  /**
+   * Clears all answers, stops animations, and erases the overlay canvas.
    */
   public clear(): void {
+    this.stopAnimation();
     this.answers = [];
     this.clearCanvas();
   }
@@ -124,7 +201,7 @@ export class AnswerLayer {
   }
 
   /**
-   * Re-draws all answers onto the overlay canvas.
+   * Re-draws all answers onto the overlay canvas with the current animation interpolation.
    */
   public redraw(): void {
     this.clearCanvas();
@@ -133,8 +210,11 @@ export class AnswerLayer {
       return;
     }
 
+    const scale = 0.88 + 0.12 * this.currentAnimProgress;
+    const alpha = Math.max(0, Math.min(1, this.currentAnimProgress));
+
     for (const item of this.answers) {
-      this.drawAnswerItem(item);
+      this.drawAnswerItem(item, scale, alpha);
     }
   }
 
@@ -142,8 +222,10 @@ export class AnswerLayer {
    * Renders a single evaluated answer next to the handwritten equation.
    *
    * @param item - EquationResult data containing text and coordinates
+   * @param scale - Scale transform factor for entrance animation
+   * @param alpha - Opacity alpha for entrance animation
    */
-  private drawAnswerItem(item: EquationResult): void {
+  private drawAnswerItem(item: EquationResult, scale: number = 1, alpha: number = 1): void {
     try {
       this.ctx.save();
 
@@ -152,24 +234,31 @@ export class AnswerLayer {
       this.ctx.textBaseline = 'alphabetic';
       this.ctx.textAlign = 'left';
 
-      // Pick distinct color based on status
+      // Pick distinct ink color based on status
       let textColor: string;
       if (item.status === 'success') {
         textColor = this.successColor;
-        // Subtle digital ink glow
-        this.ctx.shadowColor = 'rgba(29, 78, 216, 0.18)';
-        this.ctx.shadowBlur = 3;
+        this.ctx.shadowColor = this.isDark ? 'rgba(96, 165, 250, 0.35)' : 'rgba(29, 78, 216, 0.22)';
+        this.ctx.shadowBlur = 4;
       } else if (item.status === 'undefined') {
         textColor = this.undefinedColor;
-        this.ctx.shadowColor = 'rgba(185, 28, 28, 0.15)';
-        this.ctx.shadowBlur = 2;
+        this.ctx.shadowColor = this.isDark ? 'rgba(248, 113, 113, 0.3)' : 'rgba(185, 28, 28, 0.18)';
+        this.ctx.shadowBlur = 3;
       } else {
         textColor = this.syntaxErrorColor;
         this.ctx.shadowColor = 'transparent';
       }
 
       this.ctx.fillStyle = textColor;
-      this.ctx.fillText(item.displayText, item.x, item.baselineY);
+      this.ctx.globalAlpha = alpha;
+
+      // Scale and position relative to the answer anchor
+      this.ctx.translate(item.x, item.baselineY);
+      if (scale !== 1) {
+        this.ctx.scale(scale, scale);
+      }
+
+      this.ctx.fillText(item.displayText, 0, 0);
 
       this.ctx.restore();
     } catch (err) {
@@ -185,10 +274,13 @@ export class AnswerLayer {
   }
 
   /**
-   * Cleans up event listeners and observers to prevent memory leaks.
+   * Cleans up event listeners, observers, and animation frames to prevent memory leaks (Rule 7).
    */
   public destroy(): void {
-    window.removeEventListener('resize', this.boundResize);
+    this.stopAnimation();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('resize', this.boundResize);
+    }
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
