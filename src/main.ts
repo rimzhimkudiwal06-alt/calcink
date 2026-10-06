@@ -56,7 +56,6 @@ app.innerHTML = `
   <header class="calcink-header">
     <div class="brand-section">
       <h1 class="brand-title">CalcInk</h1>
-      <span class="brand-badge">Phase 6</span>
       <span class="brand-subtitle">Gestures, Variables & Plots</span>
     </div>
 
