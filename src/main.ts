@@ -21,15 +21,11 @@ import { SoundService } from './ui/sound';
 import { Toolbar } from './ui/Toolbar';
 import { GraphOverlay } from './ui/GraphOverlay';
 import { evaluate } from './math/evaluate';
-<<<<<<< HEAD
-import { recognize, StaleResultError } from './recognition/index';
-=======
 // Recognition engine: Person A uses mockRecognize until Person B provides recognize.ts
 // To swap to Person B's model, change only the next line to:
 // import { recognize } from './recognition/recognize';
-import { recognize } from './recognition/mockRecognize';
+import { recognize, StaleResultError } from './recognition/index';
 import * as mockEngine from './recognition/mockRecognize';
->>>>>>> origin/main
 import { processSymbols } from './math/lineGrouping';
 import type { Stroke } from './types';
 
@@ -47,24 +43,11 @@ import type { Stroke } from './types';
 (window as unknown as {
   processSymbols: typeof processSymbols;
 }).processSymbols = processSymbols;
-<<<<<<< HEAD
-(window as unknown as {
-  setMockEquation: (expr: string) => void;
-}).setMockEquation = (expr: string) => {
-
-  const strokes = drawingCanvas.getStrokes();
-  if (strokes.length > 0) {
-    runPipeline(strokes);
-  }
-  console.log(`%c[CalcInk Mock Engine]%c Set mock equation to %c"${expr}"%c. Current strokes re-evaluated!`, 'color: #2563eb; font-weight: bold', 'color: inherit', 'color: #16a34a; font-weight: bold', 'color: inherit');
-};
-=======
 if (typeof mockEngine.getMockEquation === 'function') {
   (window as unknown as {
     getMockEquation: () => string;
   }).getMockEquation = mockEngine.getMockEquation;
 }
->>>>>>> origin/main
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
