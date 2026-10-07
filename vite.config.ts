@@ -23,7 +23,7 @@ export default defineConfig({
   worker: { format: 'es' },
   optimizeDeps: { exclude: ['onnxruntime-web'] },
   build: {
-    rollupOptions: { input: { main: 'index.html', debug: 'debug.html' } }, // add your friend's index.html here later
+    rollupOptions: { input: { main: 'index.html', debug: 'debug.html' } },
   },
   server: { port: 3000 },
   test: {
