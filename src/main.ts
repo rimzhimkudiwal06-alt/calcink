@@ -10,6 +10,9 @@
  * 6. Reactive Evaluation Pipeline (debounced ~400ms math evaluation)
  */
 
+/// <reference types="vite-plugin-pwa/client" />
+import { registerSW } from 'virtual:pwa-register';
+registerSW({ immediate: true });
 import './style.css';
 import { BackgroundLayer, type BackgroundPattern } from './canvas/BackgroundLayer';
 import { DrawingCanvas, type ToolType } from './canvas/DrawingCanvas';
@@ -21,7 +24,7 @@ import { evaluate } from './math/evaluate';
 // Recognition engine: Person A uses mockRecognize until Person B provides recognize.ts
 // To swap to Person B's model, change only the next line to:
 // import { recognize } from './recognition/recognize';
-import { recognize } from './recognition/mockRecognize';
+import { recognize, StaleResultError } from './recognition/index';
 import * as mockEngine from './recognition/mockRecognize';
 import { processSymbols } from './math/lineGrouping';
 import type { Stroke } from './types';
@@ -238,6 +241,7 @@ const unsubscribeHistory = drawingCanvas.onHistoryChanged((canUndo, canRedo) => 
   toolbar.updateHistory(canUndo, canRedo);
 });
 
+
 // UI stat elements
 const eqCountEl = document.querySelector<HTMLSpanElement>('#eq-count');
 const strokeCountEl = document.querySelector<HTMLSpanElement>('#stroke-count');
@@ -286,6 +290,7 @@ const runPipeline = (strokes: Stroke[]) => {
     try {
       // Step 1: recognize strokes -> recognized symbols
       const symbols = await recognize(strokes);
+      console.log('[CalcInk] read:', symbols.map((s) => `${s.char}(${s.confidence.toFixed(2)})`).join(' '));
 
       // Check if a newer stroke change arrived while recognize() was running
       if (currentRequestId !== recognitionRequestId) {
@@ -322,7 +327,9 @@ const runPipeline = (strokes: Stroke[]) => {
       }
     } catch (err) {
       // Rule 5: Never throw unhandled exceptions
-      console.error('[CalcInk] Pipeline recognition error:', err);
+      if (!(err instanceof StaleResultError)) {
+        console.error('[CalcInk] Pipeline recognition error:', err);
+      }
     }
   }, 400);
 };

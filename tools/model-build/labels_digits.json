@@ -1,0 +1,17 @@
+{
+  "model_name": "mnist-8.onnx",
+  "input_spec": "NCHW [1, 1, 28, 28], float32 in [0, 1], white stroke on black background",
+  "num_classes": 10,
+  "classes": {
+    "0": "0",
+    "1": "1",
+    "2": "2",
+    "3": "3",
+    "4": "4",
+    "5": "5",
+    "6": "6",
+    "7": "7",
+    "8": "8",
+    "9": "9"
+  }
+}
