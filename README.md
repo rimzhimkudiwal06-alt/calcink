@@ -60,7 +60,7 @@ npm run preview
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Start the Vite dev server (port 3000) |
+| `npm run dev` | Start the Vite dev server (port 3001) |
 | `npm run build` | Type-check with `tsc`, then build for production |
 | `npm run preview` | Serve the production build locally |
 | `npm test` | Run the full Vitest suite once |
