@@ -7,12 +7,17 @@
  * - Pixel Eraser (X)
  * - Undo (Ctrl+Z) / Redo (Ctrl+Y or Ctrl+Shift+Z)
  * - Clear Canvas (C)
- * - Stroke Width Slider (1 - 20px)
+ * - Stroke Width Slider (1 - 18px)
+ * - Background Style Toggle (B) [Blank / Ruled / Grid]
+ * - Audio Mute Toggle (M) [Web Audio tick & vibration]
+ * - Dark Mode Toggle (D) [Day / Night Paper]
  *
  * 100% offline with zero CDN dependencies (inline SVG vector icons).
+ * Keyboard accessible with full ARIA semantics and high-contrast focus rings.
  */
 
 import type { ToolType } from '../canvas/DrawingCanvas';
+import type { BackgroundPattern } from '../canvas/BackgroundLayer';
 
 export interface ToolbarCallbacks {
   onToolChange?: (tool: ToolType) => void;
@@ -20,6 +25,10 @@ export interface ToolbarCallbacks {
   onUndo?: () => void;
   onRedo?: () => void;
   onClear?: () => void;
+  onBackgroundCycle?: () => void;
+  onToggleMute?: () => void;
+  onToggleDarkMode?: () => void;
+  onToggleGraph?: () => void;
 }
 
 export class Toolbar {
@@ -36,6 +45,19 @@ export class Toolbar {
   private sliderWidth!: HTMLInputElement;
   private widthValueLabel!: HTMLElement;
 
+  // Phase 5 Elements
+  private btnBgToggle!: HTMLButtonElement;
+  private bgIconContainer!: HTMLElement;
+  private btnMuteToggle!: HTMLButtonElement;
+  private muteIconContainer!: HTMLElement;
+  private btnThemeToggle!: HTMLButtonElement;
+  private themeIconContainer!: HTMLElement;
+  private btnGraphToggle!: HTMLButtonElement;
+
+  private currentPattern: BackgroundPattern = 'ruled';
+  private isMuted: boolean = false;
+  private isDark: boolean = false;
+
   private boundKeydown: (e: KeyboardEvent) => void;
 
   constructor(container: HTMLElement, callbacks: ToolbarCallbacks = {}) {
@@ -50,13 +72,14 @@ export class Toolbar {
   }
 
   /**
-   * Renders the HTML structure of the toolbar.
+   * Renders the accessible HTML structure of the toolbar.
    */
   private render(): void {
     this.container.innerHTML = `
-      <div class="calcink-toolbar" role="toolbar" aria-label="Drawing Tools">
-        <div class="toolbar-group tool-selection">
-          <button id="tool-pen" class="tool-btn active" type="button" title="Pen (P)" aria-label="Pen tool" data-tool="pen">
+      <div class="calcink-toolbar" role="toolbar" aria-label="Drawing and Canvas Tools">
+        <!-- Tool Selection Group -->
+        <div class="toolbar-group tool-selection" role="group" aria-label="Drawing Tools">
+          <button id="tool-pen" class="tool-btn active" type="button" title="Pen (P) - Stylus pressure enabled" aria-label="Pen tool" data-tool="pen">
             <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
             </svg>
@@ -82,17 +105,18 @@ export class Toolbar {
           </button>
         </div>
 
-        <div class="toolbar-divider"></div>
+        <div class="toolbar-divider" aria-hidden="true"></div>
 
-        <div class="toolbar-group history-controls">
-          <button id="btn-undo" class="tool-btn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+        <!-- History Controls -->
+        <div class="toolbar-group history-controls" role="group" aria-label="History Tools">
+          <button id="btn-undo" class="tool-btn" type="button" title="Undo (Ctrl+Z)" aria-label="Undo last action" disabled>
             <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 7v6h6"></path>
               <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"></path>
             </svg>
           </button>
 
-          <button id="btn-redo" class="tool-btn" type="button" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" aria-label="Redo" disabled>
+          <button id="btn-redo" class="tool-btn" type="button" title="Redo (Ctrl+Y / Ctrl+Shift+Z)" aria-label="Redo action" disabled>
             <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 7v6h-6"></path>
               <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7"></path>
@@ -108,8 +132,9 @@ export class Toolbar {
           </button>
         </div>
 
-        <div class="toolbar-divider"></div>
+        <div class="toolbar-divider" aria-hidden="true"></div>
 
+        <!-- Stroke Width Slider -->
         <div class="toolbar-group stroke-settings" title="Stroke Width">
           <label for="slider-stroke-width" class="slider-label">
             <span>Size</span>
@@ -123,8 +148,39 @@ export class Toolbar {
             value="3"
             step="1"
             class="width-slider"
-            aria-label="Stroke Width"
+            aria-label="Stroke Width Slider"
           />
+        </div>
+
+        <div class="toolbar-divider" aria-hidden="true"></div>
+
+        <!-- Micro-interactions & Theme Toggles (Phase 5) -->
+        <div class="toolbar-group micro-toggles" role="group" aria-label="Paper & Sound Settings">
+          <!-- Background Paper Pattern Toggle -->
+          <button id="btn-bg-toggle" class="tool-btn" type="button" title="Paper Background: Ruled Lines (B to cycle)" aria-label="Toggle paper background style">
+            <span id="bg-icon-container" class="toggle-icon-wrap"></span>
+            <span class="tool-label" id="bg-label">Ruled</span>
+          </button>
+
+          <!-- Audio Tick & Vibration Mute Toggle -->
+          <button id="btn-mute-toggle" class="tool-btn" type="button" title="Sound: On (M to toggle)" aria-label="Toggle answer sound" aria-pressed="false">
+            <span id="mute-icon-container" class="toggle-icon-wrap"></span>
+          </button>
+
+          <!-- Day/Night Dark Paper Theme Toggle -->
+          <button id="btn-theme-toggle" class="tool-btn" type="button" title="Dark Mode (D to toggle)" aria-label="Toggle dark mode theme" aria-pressed="false">
+            <span id="theme-icon-container" class="toggle-icon-wrap"></span>
+          </button>
+
+          <!-- Plot Function Graph Overlay Toggle (Phase 6) -->
+          <button id="btn-graph-toggle" class="tool-btn" type="button" title="Function Graph: y = 2x + 1 (G to toggle)" aria-label="Toggle function graph overlay">
+            <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="20" x2="21" y2="20"></line>
+              <line x1="4" y1="4" x2="4" y2="20"></line>
+              <polyline points="4 16 9 11 14 14 20 6"></polyline>
+            </svg>
+            <span class="tool-label">Graph</span>
+          </button>
         </div>
       </div>
     `;
@@ -138,6 +194,18 @@ export class Toolbar {
     this.btnClear = this.container.querySelector('#btn-clear-canvas')!;
     this.sliderWidth = this.container.querySelector('#slider-stroke-width')!;
     this.widthValueLabel = this.container.querySelector('#label-width-val')!;
+
+    this.btnBgToggle = this.container.querySelector('#btn-bg-toggle')!;
+    this.bgIconContainer = this.container.querySelector('#bg-icon-container')!;
+    this.btnMuteToggle = this.container.querySelector('#btn-mute-toggle')!;
+    this.muteIconContainer = this.container.querySelector('#mute-icon-container')!;
+    this.btnThemeToggle = this.container.querySelector('#btn-theme-toggle')!;
+    this.themeIconContainer = this.container.querySelector('#theme-icon-container')!;
+    this.btnGraphToggle = this.container.querySelector('#btn-graph-toggle')!;
+
+    this.renderBgIcon();
+    this.renderMuteIcon();
+    this.renderThemeIcon();
   }
 
   private bindEvents(): void {
@@ -168,11 +236,111 @@ export class Toolbar {
       this.widthValueLabel.textContent = String(width);
       this.callbacks.onWidthChange?.(width);
     });
+
+    this.btnBgToggle.addEventListener('click', () => {
+      this.callbacks.onBackgroundCycle?.();
+    });
+
+    this.btnMuteToggle.addEventListener('click', () => {
+      this.callbacks.onToggleMute?.();
+    });
+
+    this.btnThemeToggle.addEventListener('click', () => {
+      this.callbacks.onToggleDarkMode?.();
+    });
+
+    this.btnGraphToggle.addEventListener('click', () => {
+      this.callbacks.onToggleGraph?.();
+    });
   }
 
-  /**
-   * Sets visual active tool button state.
-   */
+  // ---------------------------------------------------------------------------
+  // Phase 5 Icon Rendering & State Updates
+  // ---------------------------------------------------------------------------
+
+  public setBackgroundPattern(pattern: BackgroundPattern): void {
+    this.currentPattern = pattern;
+    const labelEl = this.container.querySelector('#bg-label');
+    if (labelEl) {
+      labelEl.textContent = pattern.charAt(0).toUpperCase() + pattern.slice(1);
+    }
+    this.btnBgToggle.title = `Paper Background: ${pattern} (Press B to cycle)`;
+    this.renderBgIcon();
+  }
+
+  private renderBgIcon(): void {
+    let svg = '';
+    if (this.currentPattern === 'blank') {
+      svg = `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect></svg>`;
+    } else if (this.currentPattern === 'ruled') {
+      svg = `<svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="3" y1="15" x2="21" y2="15"></line></svg>`;
+    } else {
+      // Dot Grid
+      svg = `<svg class="tool-icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="7" cy="7" r="1.5"></circle><circle cx="12" cy="7" r="1.5"></circle><circle cx="17" cy="7" r="1.5"></circle><circle cx="7" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="17" cy="12" r="1.5"></circle><circle cx="7" cy="17" r="1.5"></circle><circle cx="12" cy="17" r="1.5"></circle><circle cx="17" cy="17" r="1.5"></circle></svg>`;
+    }
+    this.bgIconContainer.innerHTML = svg;
+  }
+
+  public setMuted(muted: boolean): void {
+    this.isMuted = muted;
+    this.btnMuteToggle.setAttribute('aria-pressed', String(muted));
+    this.btnMuteToggle.title = muted ? 'Sound: Muted (M to unmute)' : 'Sound: On (M to mute)';
+    this.renderMuteIcon();
+  }
+
+  private renderMuteIcon(): void {
+    if (this.isMuted) {
+      this.muteIconContainer.innerHTML = `
+        <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+          <line x1="23" y1="9" x2="17" y2="15"></line>
+          <line x1="17" y1="9" x2="23" y2="15"></line>
+        </svg>
+      `;
+    } else {
+      this.muteIconContainer.innerHTML = `
+        <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+          <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+        </svg>
+      `;
+    }
+  }
+
+  public setDarkMode(isDark: boolean): void {
+    this.isDark = isDark;
+    this.btnThemeToggle.setAttribute('aria-pressed', String(isDark));
+    this.btnThemeToggle.title = isDark ? 'Light Paper (D to toggle)' : 'Dark Paper (D to toggle)';
+    this.renderThemeIcon();
+  }
+
+  private renderThemeIcon(): void {
+    if (this.isDark) {
+      // Sun icon to switch to light mode
+      this.themeIconContainer.innerHTML = `
+        <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+        </svg>
+      `;
+    } else {
+      // Moon icon to switch to dark mode
+      this.themeIconContainer.innerHTML = `
+        <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+      `;
+    }
+  }
+
   public setActiveTool(tool: ToolType): void {
     const buttons = [this.btnPen, this.btnStrokeEraser, this.btnPixelEraser];
     buttons.forEach((btn) => {
@@ -184,27 +352,21 @@ export class Toolbar {
     });
   }
 
-  /**
-   * Updates enabled/disabled state of Undo and Redo buttons.
-   */
   public updateHistory(canUndo: boolean, canRedo: boolean): void {
     this.btnUndo.disabled = !canUndo;
     this.btnRedo.disabled = !canRedo;
   }
 
-  /**
-   * Sets stroke width slider value programmatically.
-   */
   public setWidth(width: number): void {
     this.sliderWidth.value = String(width);
     this.widthValueLabel.textContent = String(width);
   }
 
   /**
-   * Global keyboard shortcut listener for fast tool switching and undo/redo.
+   * Global keyboard shortcut listener for fast tool switching, undo/redo,
+   * background cycle, mute toggle, and dark mode toggle.
    */
   private handleKeydown(e: KeyboardEvent): void {
-    // Ignore keystrokes if user is typing in an input or textarea
     if (
       e.target instanceof HTMLInputElement ||
       e.target instanceof HTMLTextAreaElement
@@ -214,14 +376,14 @@ export class Toolbar {
 
     const isCtrlOrMeta = e.ctrlKey || e.metaKey;
 
-    // Undo: Ctrl+Z or Cmd+Z (without Shift)
+    // Undo: Ctrl+Z
     if (isCtrlOrMeta && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
       e.preventDefault();
       this.callbacks.onUndo?.();
       return;
     }
 
-    // Redo: Ctrl+Y or Ctrl+Shift+Z or Cmd+Shift+Z
+    // Redo: Ctrl+Y / Ctrl+Shift+Z
     if (
       isCtrlOrMeta &&
       ((e.key === 'y' || e.key === 'Y') ||
@@ -232,7 +394,7 @@ export class Toolbar {
       return;
     }
 
-    // Single key shortcuts (without Ctrl/Alt/Meta)
+    // Single key shortcuts
     if (!isCtrlOrMeta && !e.altKey) {
       if (e.key === 'p' || e.key === 'P') {
         e.preventDefault();
@@ -249,13 +411,22 @@ export class Toolbar {
       } else if (e.key === 'c' || e.key === 'C') {
         e.preventDefault();
         this.callbacks.onClear?.();
+      } else if (e.key === 'b' || e.key === 'B') {
+        e.preventDefault();
+        this.callbacks.onBackgroundCycle?.();
+      } else if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        this.callbacks.onToggleMute?.();
+      } else if (e.key === 'd' || e.key === 'D') {
+        e.preventDefault();
+        this.callbacks.onToggleDarkMode?.();
+      } else if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        this.callbacks.onToggleGraph?.();
       }
     }
   }
 
-  /**
-   * Cleans up event listeners when unmounting toolbar.
-   */
   public destroy(): void {
     window.removeEventListener('keydown', this.boundKeydown);
   }

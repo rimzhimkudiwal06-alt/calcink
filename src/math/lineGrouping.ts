@@ -189,14 +189,31 @@ export function extractEquationFromLine(
     return null;
   }
 
-  // Build the expression string by concatenating characters
-  const expression = precedingSymbols.map((s) => s.char).join('');
+  // Case 1: '=' is terminal symbol (e.g. "18+4×3 =", "x+5 =", "x=10 =")
+  if (lastEqualsIdx === lineSymbols.length - 1) {
+    const expression = precedingSymbols.map((s) => s.char).join('');
+    return {
+      expression,
+      equalsSymbol,
+      precedingSymbols,
+    };
+  }
 
-  return {
-    expression,
-    equalsSymbol,
-    precedingSymbols,
-  };
+  // Case 2: Variable assignment without trailing '=' (e.g. "x = 10")
+  const precedingText = precedingSymbols.map((s) => s.char).join('').trim();
+  if (/^[a-zA-Z][a-zA-Z0-9]*$/.test(precedingText)) {
+    const followingSymbols = lineSymbols.slice(lastEqualsIdx + 1);
+    const rhs = followingSymbols.map((s) => s.char).join('').trim();
+    if (rhs.length > 0) {
+      return {
+        expression: `${precedingText}=${rhs}`,
+        equalsSymbol: followingSymbols[followingSymbols.length - 1],
+        precedingSymbols: lineSymbols,
+      };
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -251,6 +268,43 @@ export function calculateAnswerPlacement(
 }
 
 /**
+ * Minimum confidence required for a recognized symbol to be processed.
+ * Filters out low-confidence hallucinations and background noise from Person B's neural net.
+ */
+export const MIN_SYMBOL_CONFIDENCE = 0.4;
+
+/**
+ * Validates whether a recognized symbol has plausible geometry, a non-empty character,
+ * and meets the minimum confidence threshold.
+ *
+ * @param sym - Candidate symbol
+ * @returns True if symbol is valid for mathematical equation grouping
+ */
+export function isValidSymbol(sym: RecognizedSymbol): boolean {
+  if (!sym || typeof sym.char !== 'string' || sym.char.trim() === '') {
+    return false;
+  }
+  if (typeof sym.confidence === 'number' && (Number.isNaN(sym.confidence) || sym.confidence < MIN_SYMBOL_CONFIDENCE)) {
+    return false;
+  }
+  const { bbox } = sym;
+  if (!bbox) {
+    return false;
+  }
+  if (
+    !Number.isFinite(bbox.x) ||
+    !Number.isFinite(bbox.y) ||
+    !Number.isFinite(bbox.w) ||
+    !Number.isFinite(bbox.h) ||
+    bbox.w <= 0 ||
+    bbox.h <= 0
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * End-to-end pipeline: Takes recognized symbols, groups them into lines,
  * extracts equations, evaluates them, and returns render-ready EquationResults.
  *
@@ -262,12 +316,21 @@ export function calculateAnswerPlacement(
  * @param symbols - Array of recognized symbols
  * @returns Array of EquationResults ready for the AnswerLayer
  */
-export function processSymbols(symbols: RecognizedSymbol[]): EquationResult[] {
+export function processSymbols(
+  symbols: RecognizedSymbol[],
+  scope: Record<string, number> = {}
+): EquationResult[] {
   if (!symbols || symbols.length === 0) {
     return [];
   }
 
-  const lines = groupSymbolsIntoLines(symbols);
+  // Filter out noise, low-confidence symbols (<0.40), and malformed bounding boxes
+  const validSymbols = symbols.filter(isValidSymbol);
+  if (validSymbols.length === 0) {
+    return [];
+  }
+
+  const lines = groupSymbolsIntoLines(validSymbols);
   const results: EquationResult[] = [];
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
@@ -279,7 +342,7 @@ export function processSymbols(symbols: RecognizedSymbol[]): EquationResult[] {
     }
 
     const { expression, equalsSymbol, precedingSymbols } = equationData;
-    const evalResult = evaluate(expression);
+    const evalResult = evaluate(expression, scope);
 
     let displayText: string;
     let status: 'success' | 'undefined' | 'syntax-error';
